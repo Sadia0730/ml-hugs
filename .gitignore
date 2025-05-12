@@ -1,6 +1,9 @@
 *.pyc
 .vscode
 output
+output_old
+.idea/
+pytorch3d/
 data/
 build
 diff_rasterization/diff_rast.egg-info

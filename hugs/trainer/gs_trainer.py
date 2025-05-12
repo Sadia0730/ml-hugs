@@ -582,8 +582,8 @@ class GaussianTrainer():
         video_fname = f'{self.cfg.logdir}/anim_{self.cfg.dataset.name}_{self.cfg.dataset.seq}_{iter_s}.mp4'
         create_video(f'{self.cfg.logdir}/anim/', video_fname, fps=20)
         if not keep_images:
-            shutil.rmtree(f'{self.cfg.logdir}/anim/')
-            os.makedirs(f'{self.cfg.logdir}/anim/')
+            # shutil.rmtree(f'{self.cfg.logdir}/anim/')
+            os.makedirs(f'{self.cfg.logdir}/anim/', exist_ok=True)
     
     @torch.no_grad()
     def render_canonical(self, iter=None, nframes=100, is_train_progress=False, pose_type=None):
@@ -680,8 +680,8 @@ class GaussianTrainer():
         
         video_fname = f'{self.cfg.logdir}/canon_{self.cfg.dataset.name}_{self.cfg.dataset.seq}_{iter_s}.mp4'
         create_video(f'{self.cfg.logdir}/canon/', video_fname, fps=10)
-        shutil.rmtree(f'{self.cfg.logdir}/canon/')
-        os.makedirs(f'{self.cfg.logdir}/canon/')
+        # shutil.rmtree(f'{self.cfg.logdir}/canon/')
+        os.makedirs(f'{self.cfg.logdir}/canon/', exist_ok=True)
         
     def render_poses(self, camera_params, smpl_params, pose_type='a_pose', bg_color='white'):
     
