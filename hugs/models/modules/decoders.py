@@ -109,3 +109,18 @@ class GeometryDecoder(torch.nn.Module):
             'rotations': rotations,
             'scales': scales,
         }
+
+class NonRigidDeformer(nn.Module):
+    def __init__(self, input_dim=78, hidden_dim=128, act='relu'):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            act_fn_dict[act],
+            nn.Linear(hidden_dim, hidden_dim),
+            act_fn_dict[act],
+            nn.Linear(hidden_dim, 3)  # Output: delta xyz
+        )
+
+    def forward(self, x):  # x is already concatenated [posevec | xyz | normals]
+        delta = self.net(x)
+        return delta

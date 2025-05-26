@@ -1,6 +1,6 @@
 *.pyc
 .vscode
-output
+output_human_scene_lab
 output_old
 .idea/
 pytorch3d/
@@ -12,3 +12,5 @@ tensorboard_3d
 screenshots
 *.pth
 *.zip
+logs/
+output
