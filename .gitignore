@@ -2,6 +2,9 @@
 .vscode
 output
 output_old
+output_human_non_rigid/
+output_human_scene_lab/
+logs/
 .idea/
 pytorch3d/
 data/
