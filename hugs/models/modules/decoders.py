@@ -110,17 +110,85 @@ class GeometryDecoder(torch.nn.Module):
             'scales': scales,
         }
 
-class NonRigidDeformer(nn.Module):
-    def __init__(self, input_dim=78, hidden_dim=128, act='relu'):
+class FiLMModulation(nn.Module):
+    def __init__(self, pose_dim, triplane_dim, hidden_dim=128):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            act_fn_dict[act],
+        self.film_net = nn.Sequential(
+            nn.Linear(pose_dim, hidden_dim),
+            nn.GELU(),
             nn.Linear(hidden_dim, hidden_dim),
-            act_fn_dict[act],
-            nn.Linear(hidden_dim, 3)  # Output: delta xyz
+            nn.GELU(),
+            nn.Linear(hidden_dim, triplane_dim * 2)  # gamma and beta
         )
+    
+    def forward(self, pose, triplane_feats):
+        # pose: (N, pose_dim), triplane_feats: (N, triplane_dim)
+        film_params = self.film_net(pose)
+        gamma, beta = film_params.chunk(2, dim=-1)
+        return gamma * triplane_feats + beta
 
-    def forward(self, x):  # x is already concatenated [posevec | xyz | normals]
-        delta = self.net(x)
-        return delta
+class NonRigidDeformer(nn.Module):
+    def __init__(self, input_dim=75, triplane_dim=96, hidden_dim=256, act='gelu', use_film=True):
+        super().__init__()
+        self.input_dim = input_dim + triplane_dim  # posevec + xyz + triplane_feats
+        self.hidden_dim = hidden_dim
+        self.act = act_fn_dict[act]
+        self.use_film = use_film
+        self.pose_dim = input_dim - 3  # Remove xyz from input_dim
+        self.xyz_dim = 3
+        self.triplane_dim = triplane_dim
+        
+        if use_film:
+            self.film = FiLMModulation(self.pose_dim, triplane_dim)
+        
+        self.fc1 = nn.Linear(self.input_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.ln1 = nn.LayerNorm(hidden_dim + self.input_dim)
+        self.fc3 = nn.Linear(hidden_dim + self.input_dim, hidden_dim)
+        self.fc4 = nn.Linear(hidden_dim, hidden_dim)
+        self.ln2 = nn.LayerNorm(hidden_dim + self.input_dim)
+        self.fc5 = nn.Linear(hidden_dim + self.input_dim, hidden_dim)
+        self.fc_out = nn.Linear(hidden_dim, 3)
+        # Zero-initialize last layer
+        nn.init.constant_(self.fc_out.weight, 0.0)
+        nn.init.constant_(self.fc_out.bias, 0.0)
+
+    def forward(self, x):
+        # x: [posevec | xyz | triplane_feats]
+        # Extract dimensions: posevec (72), xyz (3), triplane_feats (96)
+        pose = x[:, :self.pose_dim]  # First 72 dimensions
+        xyz = x[:, self.pose_dim:self.pose_dim + self.xyz_dim]  # Next 3 dimensions  
+        triplane_feats = x[:, self.pose_dim + self.xyz_dim:]  # Remaining dimensions
+        
+        if self.use_film:
+            modulated_triplane = self.film(pose, triplane_feats)
+            x = torch.cat([pose, xyz, modulated_triplane], dim=-1)
+        
+        h = self.act(self.fc1(x))
+        h = self.act(self.fc2(h))
+        h = torch.cat([h, x], dim=-1)
+        h = self.ln1(h)
+        h = self.act(self.fc3(h))
+        h = self.act(self.fc4(h))
+        h = torch.cat([h, x], dim=-1)
+        h = self.ln2(h)
+        h = self.act(self.fc5(h))
+        delta = self.fc_out(h)
+        return xyz + delta  # residual connection
+
+    def smoothness_loss(self, delta, xyz, k=8, max_points=1024):
+        # delta: (N, 3), xyz: (N, 3)
+        N = delta.shape[0]
+        if N > 2048:
+            idx = torch.randperm(N, device=delta.device)[:max_points]
+            delta = delta[idx]
+            xyz = xyz[idx]
+            N = max_points
+        with torch.no_grad():
+            dists = torch.cdist(xyz, xyz)  # (N, N)
+            knn_idx = dists.topk(k+1, largest=False).indices[:, 1:]  # (N, k), skip self
+        loss = 0.0
+        for i in range(delta.shape[0]):
+            neighbors = delta[knn_idx[i]]
+            loss = loss + ((delta[i] - neighbors) ** 2).sum(-1).mean()
+        return loss / delta.shape[0]

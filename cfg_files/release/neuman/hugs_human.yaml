@@ -74,6 +74,8 @@ human:
     ssim_w: 0.2
     l1_w: 0.8
     lpips_w: 1.0
+    nonrigid_w: 0.01
+    nonrigid_smooth_w: 0.001
     lbs_w: 1000.0
     humansep_w: 0.0
     num_patches: 4

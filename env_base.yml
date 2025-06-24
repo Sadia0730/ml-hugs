@@ -1,0 +1,10 @@
+name: hugs
+channels:
+  - defaults
+dependencies:
+  - python=3.8
+  - pytorch-cuda==12.1
+  - pytorch==2.4.1
+  - torchaudio==2.4.1
+  - torchvision==0.20.0
+prefix: /home/sadia/miniconda3/envs/hugs

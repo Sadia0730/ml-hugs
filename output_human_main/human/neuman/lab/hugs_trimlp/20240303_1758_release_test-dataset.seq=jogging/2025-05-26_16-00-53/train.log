@@ -1,0 +1,511 @@
+2025-05-26 16:00:53.447 | INFO     | __main__:get_logger:53 - Logging to output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53
+2025-05-26 16:00:53.451 | INFO     | __main__:get_logger:54 - seed: 0
+mode: human
+output_path: output
+cfg_file: cfg_files/release/neuman/hugs_human.yaml
+exp_name: 20240303_1758_release_test-dataset.seq=jogging
+dataset_path: ''
+detect_anomaly: false
+debug: false
+wandb: false
+logdir: output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53
+logdir_ckpt: output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53/ckpt
+eval: false
+bg_color: white
+dataset:
+  name: neuman
+  seq: lab
+train:
+  batch_size: 1
+  num_workers: 0
+  num_steps: 14998
+  save_ckpt_interval: 15000
+  val_interval: 1000
+  anim_interval: 15000
+  optim_scene: true
+  save_progress_images: false
+  progress_save_interval: 10
+human:
+  name: hugs_trimlp
+  ckpt: null
+  sh_degree: 0
+  n_subdivision: 2
+  only_rgb: false
+  use_surface: false
+  use_deformer: true
+  init_2d: false
+  disable_posedirs: true
+  res_offset: false
+  rotate_sh: false
+  isotropic: false
+  init_scale_multiplier: 0.5
+  run_init: false
+  estimate_delta: true
+  triplane_res: 256
+  optim_pose: true
+  optim_betas: false
+  optim_trans: true
+  optim_eps_offsets: false
+  activation: relu
+  canon_nframes: 60
+  canon_pose_type: da_pose
+  knn_n_hops: 3
+  lr:
+    wd: 0.0
+    position: 0.00016
+    position_init: 0.00016
+    position_final: 1.6e-06
+    position_delay_mult: 0.01
+    position_max_steps: 30000
+    opacity: 0.05
+    scaling: 0.005
+    rotation: 0.001
+    feature: 0.0025
+    smpl_spatial: 2.0
+    smpl_pose: 0.0001
+    smpl_betas: 0.0001
+    smpl_trans: 0.0001
+    smpl_eps_offset: 0.0001
+    lbs_weights: 0.0
+    posedirs: 0.0
+    percent_dense: 0.01
+    appearance: 0.001
+    geometry: 0.001
+    vembed: 0.001
+    deformation: 0.0001
+    scale_lr_w_npoints: false
+  loss:
+    ssim_w: 0.2
+    l1_w: 0.8
+    lpips_w: 1.0
+    lbs_w: 1000.0
+    humansep_w: 0.0
+    num_patches: 4
+    patch_size: 128
+    use_patches: 1
+  densification_interval: 600
+  opacity_reset_interval: 3000
+  densify_from_iter: 3000
+  densify_until_iter: 15000
+  densify_grad_threshold: 0.0002
+  prune_min_opacity: 0.005
+  densify_extent: 1.0
+  max_n_gaussians: 524288
+  percent_dense: 0.01
+scene:
+  name: scene_gs
+  ckpt: null
+  sh_degree: 3
+  add_bg_points: false
+  num_bg_points: 204800
+  bg_sphere_dist: 5.0
+  clean_pcd: false
+  opt_start_iter: -1
+  lr:
+    percent_dense: 0.01
+    spatial_scale: 1.0
+    position_init: 0.00016
+    position_final: 1.6e-06
+    position_delay_mult: 0.01
+    position_max_steps: 30000
+    opacity: 0.05
+    scaling: 0.005
+    rotation: 0.001
+    feature: 0.0025
+  percent_dense: 0.01
+  densification_interval: 100
+  opacity_reset_interval: 20000
+  densify_from_iter: 500
+  densify_until_iter: 15000
+  densify_grad_threshold: 0.0002
+  prune_min_opacity: 0.005
+  max_n_gaussians: 2097152
+  loss:
+    ssim_w: 0.2
+    l1_w: 0.8
+
+2025-05-26 16:00:53.454 | INFO     | hugs.trainer.gs_trainer:get_train_dataset:39 - Loading NeuMan dataset lab-train
+2025-05-26 16:00:55.284 | INFO     | hugs.trainer.gs_trainer:get_val_dataset:54 - Loading NeuMan dataset lab-val
+2025-05-26 16:00:55.663 | INFO     | hugs.trainer.gs_trainer:get_anim_dataset:62 - Loading NeuMan dataset lab-anim
+2025-05-26 16:00:56.353 | INFO     | hugs.models.hugs_trimlp:create_betas:139 - Created betas with shape: torch.Size([10]), requires_grad: False
+2025-05-26 16:00:56.374 | INFO     | hugs.models.hugs_trimlp:__init__:109 - Subdividing SMPL model 2 times
+2025-05-26 16:01:01.409 | INFO     | hugs.models.hugs_trimlp:create_betas:139 - Created betas with shape: torch.Size([10]), requires_grad: False
+2025-05-26 16:01:15.939 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: xyz, lr: 0.00032
+2025-05-26 16:01:15.939 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: v_embed, lr: 0.001
+2025-05-26 16:01:15.940 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: geometry_dec, lr: 0.001
+2025-05-26 16:01:15.940 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: appearance_dec, lr: 0.001
+2025-05-26 16:01:15.940 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: deform_dec, lr: 0.0005
+2025-05-26 16:03:03.014 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: xyz, lr: 0.00032
+2025-05-26 16:03:03.014 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: v_embed, lr: 0.001
+2025-05-26 16:03:03.014 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: geometry_dec, lr: 0.001
+2025-05-26 16:03:03.014 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: appearance_dec, lr: 0.001
+2025-05-26 16:03:03.015 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: deform_dec, lr: 0.0001
+2025-05-26 16:03:03.015 | INFO     | hugs.trainer.gs_trainer:__init__:128 - HUGS TRIMLP: 
+xyz: torch.Size([110210, 3]) 
+max_radii2D: torch.Size([110210]) 
+xyz_gradient_accum: torch.Size([110210, 1]) 
+denom: torch.Size([110210, 1]) 
+
+2025-05-26 16:03:03.015 | INFO     | hugs.models.hugs_trimlp:create_betas:139 - Created betas with shape: torch.Size([10]), requires_grad: False
+2025-05-26 16:03:03.016 | INFO     | hugs.models.hugs_trimlp:create_body_pose:130 - Created body pose with shape: torch.Size([82, 138]), requires_grad: True
+2025-05-26 16:03:03.017 | INFO     | hugs.models.hugs_trimlp:create_global_orient:135 - Created global_orient with shape: torch.Size([82, 6]), requires_grad: True
+2025-05-26 16:03:03.017 | INFO     | hugs.models.hugs_trimlp:create_transl:143 - Created transl with shape: torch.Size([82, 3]), requires_grad: True
+2025-05-26 16:03:03.017 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: xyz, lr: 0.00032
+2025-05-26 16:03:03.017 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: v_embed, lr: 0.001
+2025-05-26 16:03:03.018 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: geometry_dec, lr: 0.001
+2025-05-26 16:03:03.018 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: appearance_dec, lr: 0.001
+2025-05-26 16:03:03.018 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: deform_dec, lr: 0.0001
+2025-05-26 16:03:03.018 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: global_orient, lr: 0.0001
+2025-05-26 16:03:03.018 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: body_pose, lr: 0.0001
+2025-05-26 16:03:05.556 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53/canon_neuman_lab_000000.mp4
+2025-05-26 16:03:48.839 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_LPIPS: 0.7113
+2025-05-26 16:03:48.839 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_PSNR: 4.7772
+2025-05-26 16:03:48.839 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_SSIM: 0.0424
+2025-05-26 16:03:48.840 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_HUMAN_LPIPS: 0.5000
+2025-05-26 16:03:48.840 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_HUMAN_PSNR: 7.2641
+2025-05-26 16:03:48.840 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_HUMAN_SSIM: 0.2813
+2025-05-26 16:04:30.382 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_LPIPS: 0.7080
+2025-05-26 16:04:30.383 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_PSNR: 4.7763
+2025-05-26 16:04:30.383 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_SSIM: 0.0428
+2025-05-26 16:04:30.383 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_HUMAN_LPIPS: 0.4745
+2025-05-26 16:04:30.383 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_HUMAN_PSNR: 7.2734
+2025-05-26 16:04:30.384 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_HUMAN_SSIM: 0.2845
+2025-05-26 16:05:11.572 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_LPIPS: 0.7056
+2025-05-26 16:05:11.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_PSNR: 4.7776
+2025-05-26 16:05:11.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_SSIM: 0.0435
+2025-05-26 16:05:11.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_HUMAN_LPIPS: 0.4581
+2025-05-26 16:05:11.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_HUMAN_PSNR: 7.2868
+2025-05-26 16:05:11.574 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_HUMAN_SSIM: 0.2908
+2025-05-26 16:05:54.597 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_LPIPS: 0.7045
+2025-05-26 16:05:54.598 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_PSNR: 4.7776
+2025-05-26 16:05:54.598 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_SSIM: 0.0440
+2025-05-26 16:05:54.598 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_HUMAN_LPIPS: 0.4501
+2025-05-26 16:05:54.598 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_HUMAN_PSNR: 7.2876
+2025-05-26 16:05:54.598 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_HUMAN_SSIM: 0.2946
+2025-05-26 16:06:49.945 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_LPIPS: 0.7034
+2025-05-26 16:06:49.946 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_PSNR: 4.7782
+2025-05-26 16:06:49.946 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_SSIM: 0.0441
+2025-05-26 16:06:49.946 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_HUMAN_LPIPS: 0.4429
+2025-05-26 16:06:49.946 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_HUMAN_PSNR: 7.2962
+2025-05-26 16:06:49.947 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_HUMAN_SSIM: 0.2954
+2025-05-26 16:08:02.077 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_LPIPS: 0.7009
+2025-05-26 16:08:02.077 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_PSNR: 4.7812
+2025-05-26 16:08:02.077 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_SSIM: 0.0441
+2025-05-26 16:08:02.078 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_HUMAN_LPIPS: 0.4273
+2025-05-26 16:08:02.078 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_HUMAN_PSNR: 7.3309
+2025-05-26 16:08:02.078 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_HUMAN_SSIM: 0.2949
+2025-05-26 16:09:34.709 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_LPIPS: 0.7013
+2025-05-26 16:09:34.709 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_PSNR: 4.7787
+2025-05-26 16:09:34.710 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_SSIM: 0.0438
+2025-05-26 16:09:34.710 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_HUMAN_LPIPS: 0.4284
+2025-05-26 16:09:34.710 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_HUMAN_PSNR: 7.2991
+2025-05-26 16:09:34.710 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_HUMAN_SSIM: 0.2928
+2025-05-26 16:11:26.098 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_LPIPS: 0.7009
+2025-05-26 16:11:26.098 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_PSNR: 4.7784
+2025-05-26 16:11:26.098 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_SSIM: 0.0440
+2025-05-26 16:11:26.099 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_HUMAN_LPIPS: 0.4250
+2025-05-26 16:11:26.099 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_HUMAN_PSNR: 7.2927
+2025-05-26 16:11:26.099 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_HUMAN_SSIM: 0.2947
+2025-05-26 16:12:50.136 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_LPIPS: 0.7004
+2025-05-26 16:12:50.136 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_PSNR: 4.7781
+2025-05-26 16:12:50.136 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_SSIM: 0.0431
+2025-05-26 16:12:50.136 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_HUMAN_LPIPS: 0.4228
+2025-05-26 16:12:50.137 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_HUMAN_PSNR: 7.2897
+2025-05-26 16:12:50.137 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_HUMAN_SSIM: 0.2867
+2025-05-26 16:14:06.381 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_LPIPS: 0.7002
+2025-05-26 16:14:06.381 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_PSNR: 4.7779
+2025-05-26 16:14:06.381 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_SSIM: 0.0439
+2025-05-26 16:14:06.381 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_HUMAN_LPIPS: 0.4198
+2025-05-26 16:14:06.382 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_HUMAN_PSNR: 7.2825
+2025-05-26 16:14:06.382 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_HUMAN_SSIM: 0.2933
+2025-05-26 16:15:45.880 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_LPIPS: 0.7002
+2025-05-26 16:15:45.880 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_PSNR: 4.7780
+2025-05-26 16:15:45.880 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_SSIM: 0.0438
+2025-05-26 16:15:45.880 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_HUMAN_LPIPS: 0.4203
+2025-05-26 16:15:45.881 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_HUMAN_PSNR: 7.2898
+2025-05-26 16:15:45.881 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_HUMAN_SSIM: 0.2923
+2025-05-26 16:17:47.091 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_LPIPS: 0.7081
+2025-05-26 16:17:47.092 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_PSNR: 4.7682
+2025-05-26 16:17:47.092 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_SSIM: 0.0318
+2025-05-26 16:17:47.092 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_HUMAN_LPIPS: 0.4865
+2025-05-26 16:17:47.092 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_HUMAN_PSNR: 7.1452
+2025-05-26 16:17:47.093 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_HUMAN_SSIM: 0.1960
+2025-05-26 16:19:06.671 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_LPIPS: 0.7002
+2025-05-26 16:19:06.671 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_PSNR: 4.7779
+2025-05-26 16:19:06.672 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_SSIM: 0.0440
+2025-05-26 16:19:06.672 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_HUMAN_LPIPS: 0.4203
+2025-05-26 16:19:06.672 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_HUMAN_PSNR: 7.2929
+2025-05-26 16:19:06.672 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_HUMAN_SSIM: 0.2942
+2025-05-26 16:20:48.650 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_LPIPS: 0.6999
+2025-05-26 16:20:48.650 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_PSNR: 4.7778
+2025-05-26 16:20:48.650 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_SSIM: 0.0439
+2025-05-26 16:20:48.651 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_HUMAN_LPIPS: 0.4183
+2025-05-26 16:20:48.651 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_HUMAN_PSNR: 7.2847
+2025-05-26 16:20:48.651 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_HUMAN_SSIM: 0.2937
+2025-05-26 16:22:19.653 | INFO     | hugs.trainer.gs_trainer:save_ckpt:404 - Saved checkpoint 014998
+2025-05-26 16:22:19.725 | INFO     | hugs.trainer.gs_trainer:save_ckpt:404 - Saved checkpoint final
+2025-05-26 16:22:22.290 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_LPIPS: 0.7003
+2025-05-26 16:22:22.290 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_PSNR: 4.7770
+2025-05-26 16:22:22.290 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_SSIM: 0.0435
+2025-05-26 16:22:22.291 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_HUMAN_LPIPS: 0.4218
+2025-05-26 16:22:22.291 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_HUMAN_PSNR: 7.2728
+2025-05-26 16:22:22.291 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_HUMAN_SSIM: 0.2896
+2025-05-26 16:22:36.067 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53/anim_neuman_lab_final.mp4
+2025-05-26 16:22:40.797 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53/canon_neuman_lab_final_a_pose.mp4
+2025-05-26 16:22:44.917 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=jogging/2025-05-26_16-00-53/canon_neuman_lab_final_da_pose.mp4
+2025-05-26 16:22:45.245 | INFO     | __main__:<module>:105 - Running experiment 5 -- 20240303_1758_release_test-dataset.seq=parkinglot
+2025-05-26 16:22:45.255 | INFO     | __main__:get_logger:53 - Logging to output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45
+2025-05-26 16:22:45.259 | INFO     | __main__:get_logger:54 - seed: 0
+mode: human
+output_path: output
+cfg_file: cfg_files/release/neuman/hugs_human.yaml
+exp_name: 20240303_1758_release_test-dataset.seq=parkinglot
+dataset_path: ''
+detect_anomaly: false
+debug: false
+wandb: false
+logdir: output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45
+logdir_ckpt: output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45/ckpt
+eval: false
+bg_color: white
+dataset:
+  name: neuman
+  seq: lab
+train:
+  batch_size: 1
+  num_workers: 0
+  num_steps: 14998
+  save_ckpt_interval: 15000
+  val_interval: 1000
+  anim_interval: 15000
+  optim_scene: true
+  save_progress_images: false
+  progress_save_interval: 10
+human:
+  name: hugs_trimlp
+  ckpt: null
+  sh_degree: 0
+  n_subdivision: 2
+  only_rgb: false
+  use_surface: false
+  use_deformer: true
+  init_2d: false
+  disable_posedirs: true
+  res_offset: false
+  rotate_sh: false
+  isotropic: false
+  init_scale_multiplier: 0.5
+  run_init: false
+  estimate_delta: true
+  triplane_res: 256
+  optim_pose: true
+  optim_betas: false
+  optim_trans: true
+  optim_eps_offsets: false
+  activation: relu
+  canon_nframes: 60
+  canon_pose_type: da_pose
+  knn_n_hops: 3
+  lr:
+    wd: 0.0
+    position: 0.00016
+    position_init: 0.00016
+    position_final: 1.6e-06
+    position_delay_mult: 0.01
+    position_max_steps: 30000
+    opacity: 0.05
+    scaling: 0.005
+    rotation: 0.001
+    feature: 0.0025
+    smpl_spatial: 2.0
+    smpl_pose: 0.0001
+    smpl_betas: 0.0001
+    smpl_trans: 0.0001
+    smpl_eps_offset: 0.0001
+    lbs_weights: 0.0
+    posedirs: 0.0
+    percent_dense: 0.01
+    appearance: 0.001
+    geometry: 0.001
+    vembed: 0.001
+    deformation: 0.0001
+    scale_lr_w_npoints: false
+  loss:
+    ssim_w: 0.2
+    l1_w: 0.8
+    lpips_w: 1.0
+    lbs_w: 1000.0
+    humansep_w: 0.0
+    num_patches: 4
+    patch_size: 128
+    use_patches: 1
+  densification_interval: 600
+  opacity_reset_interval: 3000
+  densify_from_iter: 3000
+  densify_until_iter: 15000
+  densify_grad_threshold: 0.0002
+  prune_min_opacity: 0.005
+  densify_extent: 1.0
+  max_n_gaussians: 524288
+  percent_dense: 0.01
+scene:
+  name: scene_gs
+  ckpt: null
+  sh_degree: 3
+  add_bg_points: false
+  num_bg_points: 204800
+  bg_sphere_dist: 5.0
+  clean_pcd: false
+  opt_start_iter: -1
+  lr:
+    percent_dense: 0.01
+    spatial_scale: 1.0
+    position_init: 0.00016
+    position_final: 1.6e-06
+    position_delay_mult: 0.01
+    position_max_steps: 30000
+    opacity: 0.05
+    scaling: 0.005
+    rotation: 0.001
+    feature: 0.0025
+  percent_dense: 0.01
+  densification_interval: 100
+  opacity_reset_interval: 20000
+  densify_from_iter: 500
+  densify_until_iter: 15000
+  densify_grad_threshold: 0.0002
+  prune_min_opacity: 0.005
+  max_n_gaussians: 2097152
+  loss:
+    ssim_w: 0.2
+    l1_w: 0.8
+
+2025-05-26 16:22:45.262 | INFO     | hugs.trainer.gs_trainer:get_train_dataset:39 - Loading NeuMan dataset lab-train
+2025-05-26 16:22:47.068 | INFO     | hugs.trainer.gs_trainer:get_val_dataset:54 - Loading NeuMan dataset lab-val
+2025-05-26 16:22:47.436 | INFO     | hugs.trainer.gs_trainer:get_anim_dataset:62 - Loading NeuMan dataset lab-anim
+2025-05-26 16:22:48.115 | INFO     | hugs.models.hugs_trimlp:create_betas:139 - Created betas with shape: torch.Size([10]), requires_grad: False
+2025-05-26 16:22:48.139 | INFO     | hugs.models.hugs_trimlp:__init__:109 - Subdividing SMPL model 2 times
+2025-05-26 16:22:53.252 | INFO     | hugs.models.hugs_trimlp:create_betas:139 - Created betas with shape: torch.Size([10]), requires_grad: False
+2025-05-26 16:23:07.752 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: xyz, lr: 0.00032
+2025-05-26 16:23:07.753 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: v_embed, lr: 0.001
+2025-05-26 16:23:07.753 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: geometry_dec, lr: 0.001
+2025-05-26 16:23:07.753 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: appearance_dec, lr: 0.001
+2025-05-26 16:23:07.753 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: deform_dec, lr: 0.0005
+2025-05-26 16:24:54.891 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: xyz, lr: 0.00032
+2025-05-26 16:24:54.892 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: v_embed, lr: 0.001
+2025-05-26 16:24:54.892 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: geometry_dec, lr: 0.001
+2025-05-26 16:24:54.892 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: appearance_dec, lr: 0.001
+2025-05-26 16:24:54.892 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: deform_dec, lr: 0.0001
+2025-05-26 16:24:54.893 | INFO     | hugs.trainer.gs_trainer:__init__:128 - HUGS TRIMLP: 
+xyz: torch.Size([110210, 3]) 
+max_radii2D: torch.Size([110210]) 
+xyz_gradient_accum: torch.Size([110210, 1]) 
+denom: torch.Size([110210, 1]) 
+
+2025-05-26 16:24:54.893 | INFO     | hugs.models.hugs_trimlp:create_betas:139 - Created betas with shape: torch.Size([10]), requires_grad: False
+2025-05-26 16:24:54.894 | INFO     | hugs.models.hugs_trimlp:create_body_pose:130 - Created body pose with shape: torch.Size([82, 138]), requires_grad: True
+2025-05-26 16:24:54.895 | INFO     | hugs.models.hugs_trimlp:create_global_orient:135 - Created global_orient with shape: torch.Size([82, 6]), requires_grad: True
+2025-05-26 16:24:54.895 | INFO     | hugs.models.hugs_trimlp:create_transl:143 - Created transl with shape: torch.Size([82, 3]), requires_grad: True
+2025-05-26 16:24:54.895 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: xyz, lr: 0.00032
+2025-05-26 16:24:54.895 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: v_embed, lr: 0.001
+2025-05-26 16:24:54.896 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: geometry_dec, lr: 0.001
+2025-05-26 16:24:54.896 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: appearance_dec, lr: 0.001
+2025-05-26 16:24:54.896 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: deform_dec, lr: 0.0001
+2025-05-26 16:24:54.896 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: global_orient, lr: 0.0001
+2025-05-26 16:24:54.896 | INFO     | hugs.models.hugs_trimlp:setup_optimizer:699 - Parameter: body_pose, lr: 0.0001
+2025-05-26 16:24:57.460 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45/canon_neuman_lab_000000.mp4
+2025-05-26 16:25:40.211 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_LPIPS: 0.7116
+2025-05-26 16:25:40.212 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_PSNR: 4.7775
+2025-05-26 16:25:40.212 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_SSIM: 0.0427
+2025-05-26 16:25:40.212 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_HUMAN_LPIPS: 0.5028
+2025-05-26 16:25:40.213 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_HUMAN_PSNR: 7.2716
+2025-05-26 16:25:40.213 | INFO     | hugs.trainer.gs_trainer:validate:534 - 001000 - HUGS_HUMAN_SSIM: 0.2835
+2025-05-26 16:26:21.845 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_LPIPS: 0.7088
+2025-05-26 16:26:21.846 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_PSNR: 4.7772
+2025-05-26 16:26:21.846 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_SSIM: 0.0430
+2025-05-26 16:26:21.846 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_HUMAN_LPIPS: 0.4821
+2025-05-26 16:26:21.846 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_HUMAN_PSNR: 7.2838
+2025-05-26 16:26:21.847 | INFO     | hugs.trainer.gs_trainer:validate:534 - 002000 - HUGS_HUMAN_SSIM: 0.2855
+2025-05-26 16:27:03.776 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_LPIPS: 0.7057
+2025-05-26 16:27:03.776 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_PSNR: 4.7783
+2025-05-26 16:27:03.777 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_SSIM: 0.0434
+2025-05-26 16:27:03.777 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_HUMAN_LPIPS: 0.4589
+2025-05-26 16:27:03.777 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_HUMAN_PSNR: 7.2967
+2025-05-26 16:27:03.777 | INFO     | hugs.trainer.gs_trainer:validate:534 - 003000 - HUGS_HUMAN_SSIM: 0.2902
+2025-05-26 16:27:46.292 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_LPIPS: 0.7046
+2025-05-26 16:27:46.292 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_PSNR: 4.7765
+2025-05-26 16:27:46.293 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_SSIM: 0.0436
+2025-05-26 16:27:46.293 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_HUMAN_LPIPS: 0.4495
+2025-05-26 16:27:46.293 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_HUMAN_PSNR: 7.2708
+2025-05-26 16:27:46.293 | INFO     | hugs.trainer.gs_trainer:validate:534 - 004000 - HUGS_HUMAN_SSIM: 0.2916
+2025-05-26 16:28:39.451 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_LPIPS: 0.7035
+2025-05-26 16:28:39.452 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_PSNR: 4.7778
+2025-05-26 16:28:39.452 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_SSIM: 0.0440
+2025-05-26 16:28:39.452 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_HUMAN_LPIPS: 0.4433
+2025-05-26 16:28:39.452 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_HUMAN_PSNR: 7.2888
+2025-05-26 16:28:39.453 | INFO     | hugs.trainer.gs_trainer:validate:534 - 005000 - HUGS_HUMAN_SSIM: 0.2944
+2025-05-26 16:29:48.109 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_LPIPS: 0.7010
+2025-05-26 16:29:48.109 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_PSNR: 4.7815
+2025-05-26 16:29:48.109 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_SSIM: 0.0442
+2025-05-26 16:29:48.110 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_HUMAN_LPIPS: 0.4273
+2025-05-26 16:29:48.110 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_HUMAN_PSNR: 7.3346
+2025-05-26 16:29:48.110 | INFO     | hugs.trainer.gs_trainer:validate:534 - 006000 - HUGS_HUMAN_SSIM: 0.2955
+2025-05-26 16:31:16.078 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_LPIPS: 0.7014
+2025-05-26 16:31:16.078 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_PSNR: 4.7783
+2025-05-26 16:31:16.078 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_SSIM: 0.0437
+2025-05-26 16:31:16.079 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_HUMAN_LPIPS: 0.4296
+2025-05-26 16:31:16.079 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_HUMAN_PSNR: 7.2942
+2025-05-26 16:31:16.079 | INFO     | hugs.trainer.gs_trainer:validate:534 - 007000 - HUGS_HUMAN_SSIM: 0.2924
+2025-05-26 16:33:01.161 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_LPIPS: 0.7009
+2025-05-26 16:33:01.162 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_PSNR: 4.7773
+2025-05-26 16:33:01.162 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_SSIM: 0.0438
+2025-05-26 16:33:01.162 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_HUMAN_LPIPS: 0.4248
+2025-05-26 16:33:01.162 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_HUMAN_PSNR: 7.2791
+2025-05-26 16:33:01.163 | INFO     | hugs.trainer.gs_trainer:validate:534 - 008000 - HUGS_HUMAN_SSIM: 0.2927
+2025-05-26 16:34:20.549 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_LPIPS: 0.7003
+2025-05-26 16:34:20.550 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_PSNR: 4.7789
+2025-05-26 16:34:20.550 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_SSIM: 0.0432
+2025-05-26 16:34:20.550 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_HUMAN_LPIPS: 0.4232
+2025-05-26 16:34:20.550 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_HUMAN_PSNR: 7.2986
+2025-05-26 16:34:20.551 | INFO     | hugs.trainer.gs_trainer:validate:534 - 009000 - HUGS_HUMAN_SSIM: 0.2881
+2025-05-26 16:35:32.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_LPIPS: 0.7005
+2025-05-26 16:35:32.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_PSNR: 4.7773
+2025-05-26 16:35:32.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_SSIM: 0.0436
+2025-05-26 16:35:32.573 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_HUMAN_LPIPS: 0.4232
+2025-05-26 16:35:32.574 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_HUMAN_PSNR: 7.2740
+2025-05-26 16:35:32.574 | INFO     | hugs.trainer.gs_trainer:validate:534 - 010000 - HUGS_HUMAN_SSIM: 0.2908
+2025-05-26 16:37:07.868 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_LPIPS: 0.7004
+2025-05-26 16:37:07.869 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_PSNR: 4.7791
+2025-05-26 16:37:07.869 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_SSIM: 0.0440
+2025-05-26 16:37:07.869 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_HUMAN_LPIPS: 0.4207
+2025-05-26 16:37:07.869 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_HUMAN_PSNR: 7.3051
+2025-05-26 16:37:07.869 | INFO     | hugs.trainer.gs_trainer:validate:534 - 011000 - HUGS_HUMAN_SSIM: 0.2942
+2025-05-26 16:39:06.012 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_LPIPS: 0.7070
+2025-05-26 16:39:06.012 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_PSNR: 4.7699
+2025-05-26 16:39:06.013 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_SSIM: 0.0335
+2025-05-26 16:39:06.013 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_HUMAN_LPIPS: 0.4766
+2025-05-26 16:39:06.013 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_HUMAN_PSNR: 7.1698
+2025-05-26 16:39:06.013 | INFO     | hugs.trainer.gs_trainer:validate:534 - 012000 - HUGS_HUMAN_SSIM: 0.2092
+2025-05-26 16:40:23.146 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_LPIPS: 0.7003
+2025-05-26 16:40:23.147 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_PSNR: 4.7778
+2025-05-26 16:40:23.147 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_SSIM: 0.0440
+2025-05-26 16:40:23.147 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_HUMAN_LPIPS: 0.4210
+2025-05-26 16:40:23.147 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_HUMAN_PSNR: 7.2897
+2025-05-26 16:40:23.148 | INFO     | hugs.trainer.gs_trainer:validate:534 - 013000 - HUGS_HUMAN_SSIM: 0.2945
+2025-05-26 16:42:03.351 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_LPIPS: 0.7000
+2025-05-26 16:42:03.351 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_PSNR: 4.7782
+2025-05-26 16:42:03.351 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_SSIM: 0.0439
+2025-05-26 16:42:03.352 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_HUMAN_LPIPS: 0.4190
+2025-05-26 16:42:03.352 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_HUMAN_PSNR: 7.2875
+2025-05-26 16:42:03.352 | INFO     | hugs.trainer.gs_trainer:validate:534 - 014000 - HUGS_HUMAN_SSIM: 0.2935
+2025-05-26 16:44:03.315 | INFO     | hugs.trainer.gs_trainer:save_ckpt:404 - Saved checkpoint 014998
+2025-05-26 16:44:03.396 | INFO     | hugs.trainer.gs_trainer:save_ckpt:404 - Saved checkpoint final
+2025-05-26 16:44:06.090 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_LPIPS: 0.7001
+2025-05-26 16:44:06.090 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_PSNR: 4.7769
+2025-05-26 16:44:06.090 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_SSIM: 0.0435
+2025-05-26 16:44:06.091 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_HUMAN_LPIPS: 0.4205
+2025-05-26 16:44:06.091 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_HUMAN_PSNR: 7.2730
+2025-05-26 16:44:06.091 | INFO     | hugs.trainer.gs_trainer:validate:534 - final - HUGS_HUMAN_SSIM: 0.2902
+2025-05-26 16:44:23.821 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45/anim_neuman_lab_final.mp4
+2025-05-26 16:44:30.360 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45/canon_neuman_lab_final_a_pose.mp4
+2025-05-26 16:44:36.185 | INFO     | hugs.utils.general:create_video:91 - Video is saved under output/human/neuman/lab/hugs_trimlp/20240303_1758_release_test-dataset.seq=parkinglot/2025-05-26_16-22-45/canon_neuman_lab_final_da_pose.mp4

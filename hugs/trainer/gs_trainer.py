@@ -284,6 +284,23 @@ class GaussianTrainer():
                 human_bg_color=human_bg_color,
             )
             
+            # Add nonrigid deformer losses to monitoring
+            if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_reg'):
+                nonrigid_reg_loss = self.human_gs.loss_nonrigid_reg
+                nonrigid_smooth_loss = self.human_gs.loss_nonrigid_smooth
+                nonrigid_delta_mag = torch.norm(human_gs_out['nonrigid_delta'], dim=-1).mean()
+                
+                # Add to loss_dict for monitoring
+                loss_dict['nonrigid_reg'] = nonrigid_reg_loss
+                loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
+                loss_dict['nonrigid_delta_mag'] = nonrigid_delta_mag
+                
+                # Add to total loss with weights
+                loss = loss + self.cfg.human.loss.nonrigid_w * nonrigid_reg_loss
+                if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
+                    loss = loss + self.cfg.human.loss.nonrigid_smooth_w * nonrigid_smooth_loss
+            else:
+                loss = loss
             loss.backward()
             
             loss_dict['loss'] = loss

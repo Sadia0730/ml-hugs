@@ -105,7 +105,18 @@ class HUGS_TRIMLP:
         self.deformation_dec = DeformationDecoder(n_features=n_features*3, 
                                                   disable_posedirs=disable_posedirs).to('cuda')
         self.geometry_dec = GeometryDecoder(n_features=n_features*3, use_surface=use_surface).to('cuda')
-        self.nonrigid_deformer = NonRigidDeformer(input_dim=138+6, hidden_dim=128).to('cuda')
+        # Dynamically determine pose_dim and triplane_dim
+        # Use a dummy forward to get tri_feats shape
+        dummy_xyz = torch.zeros(1, 3, device='cuda')
+        dummy_tri_feats = self.triplane(dummy_xyz)
+        triplane_dim = dummy_tri_feats.shape[1]
+        # Use body_pose shape for pose_dim
+        if hasattr(self, 'body_pose') and self.body_pose is not None:
+            pose_dim = self.body_pose.shape[1]
+        else:
+            pose_dim = 138  # fallback to 23*6
+        xyz_dim = 3
+        self.nonrigid_deformer = NonRigidDeformer(input_dim=pose_dim + xyz_dim, triplane_dim=triplane_dim, act='gelu').to('cuda')
         
         if n_subdivision > 0:
             logger.info(f"Subdividing SMPL model {n_subdivision} times")
@@ -266,14 +277,17 @@ class HUGS_TRIMLP:
         else:
             posevec = body_pose.reshape(-1)
 
+        tri_feats = self.triplane(self.get_xyz)
+        pose_dim = posevec.shape[0]
         nonrigid_input = torch.cat([
-            posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, 72)
+            posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, pose_dim)
             gs_xyz,  # (N, 3)
-            canon_normals  # (N, 3)
+            tri_feats  # (N, triplane_dim)
         ], dim=-1)
-
-        nonrigid_delta = self.nonrigid_deformer(nonrigid_input)  # (N, 3)
-        gs_xyz = gs_xyz + nonrigid_delta
+        nonrigid_delta = self.nonrigid_deformer(nonrigid_input)
+        self.loss_nonrigid_reg = torch.mean((nonrigid_delta - gs_xyz) ** 2)
+        self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(nonrigid_delta, gs_xyz)
+        gs_xyz = nonrigid_delta
         # ======================================================
 
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
@@ -446,30 +460,32 @@ class HUGS_TRIMLP:
             self._canonical_normals = torch.zeros_like(geom_normals)
             self._canonical_normals[:, 2] = 1.0
 
-        # Cosine similarity between computed and canonical normals
-        cos_sim = F.cosine_similarity(geom_normals, self._canonical_normals, dim=-1)
-        mean_sim = cos_sim.mean().item()
-        min_sim = cos_sim.min().item()
-        max_sim = cos_sim.max().item()
-
-        from loguru import logger
-        logger.add("logs/normal_alignment.log", format="{time} {level} {message}", level="INFO", rotation="1 MB")
-        logger.info(f"[NormalAlign] Cosine Sim → Mean: {mean_sim:.4f}, Min: {min_sim:.4f}, Max: {max_sim:.4f}")
+        # # Cosine similarity between computed and canonical normals
+        # cos_sim = F.cosine_similarity(geom_normals, self._canonical_normals, dim=-1)
+        # mean_sim = cos_sim.mean().item()
+        # min_sim = cos_sim.min().item()
+        # max_sim = cos_sim.max().item()
+        #
+        # from loguru import logger
+        # logger.add("logs/normal_alignment.log", format="{time} {level} {message}", level="INFO", rotation="1 MB")
+        # logger.info(f"[NormalAlign] Cosine Sim → Mean: {mean_sim:.4f}, Min: {min_sim:.4f}, Max: {max_sim:.4f}")
 
         if hasattr(self, 'body_pose') and self.body_pose is not None:
             posevec = self.body_pose[dataset_idx].reshape(-1)  # (72,)
         else:
             posevec = body_pose.reshape(-1)
 
+        pose_dim = posevec.shape[0]
         nonrigid_input = torch.cat([
-            posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, 72)
+            posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, pose_dim)
             gs_xyz,  # (N, 3)
-            geom_normals  # (N, 3)
+            tri_feats  # (N, triplane_dim)
         ], dim=-1)
 
-        nonrigid_delta = self.nonrigid_deformer(nonrigid_input)  # (N, 3)
-        self.loss_nonrigid_reg = torch.mean(nonrigid_delta ** 2)
-        gs_xyz = gs_xyz + nonrigid_delta
+        nonrigid_delta = self.nonrigid_deformer(nonrigid_input)
+        self.loss_nonrigid_reg = torch.mean((nonrigid_delta - gs_xyz) ** 2)
+        self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(nonrigid_delta, gs_xyz)
+        gs_xyz = nonrigid_delta
 
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
         gs_rotq = matrix_to_quaternion(gs_rotmat)
@@ -508,7 +524,7 @@ class HUGS_TRIMLP:
             
         if hasattr(self, 'transl') and transl is None:
             transl = self.transl[dataset_idx]
-        
+
         # vitruvian -> t-pose -> posed
         # remove and reapply the blendshape
         smpl_output = self.smpl(
@@ -589,7 +605,12 @@ class HUGS_TRIMLP:
         deformed_normals = (deformed_gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
         
         deformed_gs_shs = gs_shs.clone()
-        
+        print(self._xyz.shape)
+        print(deformed_normals.shape)
+        print(gs_scales.shape)
+        print(gs_opacity.shape)
+        print(gs_shs.shape)
+
         return {
             'xyz': deformed_xyz,
             'xyz_canon': gs_xyz,
