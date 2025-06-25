@@ -15,6 +15,7 @@ from tqdm import tqdm
 from lpips import LPIPS
 from loguru import logger
 import torch.distributed as dist
+import torch.distributed as dist
 
 from hugs.datasets.utils import (
     get_rotating_camera,
@@ -33,6 +34,7 @@ from hugs.renderer.gs_renderer import render_human_scene
 from hugs.utils.vis import save_ply
 from hugs.utils.image import psnr, save_image
 from hugs.utils.general import RandomIndexIterator, load_human_ckpt, save_images, create_video
+from hugs.utils.distributed import convert_model_to_ddp, is_main_process, get_world_size
 from hugs.utils.distributed import convert_model_to_ddp, is_main_process, get_world_size
 
 
@@ -72,7 +74,7 @@ def get_anim_dataset(cfg):
 class GaussianTrainer():
     def __init__(self, cfg) -> None:
         self.cfg = cfg
-        self.device = torch.cuda.current_device()  # for ddp
+      self.device = torch.cuda.current_device()  # for ddp
         
         # get dataset
         if not cfg.eval:
@@ -81,6 +83,7 @@ class GaussianTrainer():
         self.anim_dataset = get_anim_dataset(cfg)
         
         self.eval_metrics = {}
+        self.lpips = LPIPS(net="alex", pretrained=True).to(self.device)  # ddp
         self.lpips = LPIPS(net="alex", pretrained=True).to(self.device)  # ddp
         # get models
         self.human_gs, self.scene_gs = None, None
@@ -104,6 +107,11 @@ class GaussianTrainer():
                 if dist.is_initialized():
                     self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
             
+                
+                # Convert to DDP if using distributed training
+                if dist.is_initialized():
+                    self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
+            
             elif cfg.human.name == 'hugs_trimlp':
                 self.human_gs = HUGS_TRIMLP(
                     sh_degree=cfg.human.sh_degree, 
@@ -118,7 +126,14 @@ class GaussianTrainer():
                     triplane_res=cfg.human.triplane_res,
                 )
                 init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
+                init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
+                self.human_gs.initialize()
+                
+                # Convert to DDP if using distributed training
+                if dist.is_initialized():
+                    self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
+            
                 self.human_gs.initialize()
                 
                 # Convert to DDP if using distributed training
@@ -129,6 +144,10 @@ class GaussianTrainer():
             self.scene_gs = SceneGS(
                 sh_degree=cfg.scene.sh_degree,
             )
+            
+            # Convert to DDP if using distributed training
+            if dist.is_initialized():
+                self.scene_gs = convert_model_to_ddp(self.scene_gs, self.device)
             
             # Convert to DDP if using distributed training
             if dist.is_initialized():
@@ -155,6 +174,7 @@ class GaussianTrainer():
                 init_smpl_trans = torch.stack([x['transl'] for x in self.train_dataset.cached_data], dim=0)
                 init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
                 init_eps_offsets = torch.zeros((len(self.train_dataset), self.human_gs.n_gs, 3), 
+                                            dtype=torch.float32, device=self.device)
                                             dtype=torch.float32, device=self.device)
 
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
@@ -187,7 +207,9 @@ class GaussianTrainer():
         bg_color = cfg.bg_color
         if bg_color == 'white':
             self.bg_color = torch.tensor([1, 1, 1], dtype=torch.float32, device=self.device)
+            self.bg_color = torch.tensor([1, 1, 1], dtype=torch.float32, device=self.device)
         elif bg_color == 'black':
+            self.bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device=self.device)
             self.bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device=self.device)
         else:
             raise ValueError(f"Unknown background color {bg_color}")
@@ -231,6 +253,11 @@ class GaussianTrainer():
         if self.human_gs:
             self.human_gs.train()
 
+        # Only show progress bar on main process
+        if is_main_process():
+            pbar = tqdm(range(self.cfg.train.num_steps+1), desc="Training")
+        else:
+            pbar = range(self.cfg.train.num_steps+1)
         # Only show progress bar on main process
         if is_main_process():
             pbar = tqdm(range(self.cfg.train.num_steps+1), desc="Training")
@@ -322,6 +349,7 @@ class GaussianTrainer():
             loss_dict['loss'] = loss
             
             if t_iter % 10 == 0 and is_main_process():
+            if t_iter % 10 == 0 and is_main_process():
                 postfix_dict = {
                     "#hp": f"{self.human_gs.n_gs/1000 if self.human_gs else 0:.1f}K",
                     "#sp": f"{self.scene_gs.get_xyz.shape[0]/1000 if self.scene_gs else 0:.1f}K",
@@ -335,8 +363,10 @@ class GaussianTrainer():
                 pbar.update(10)
                 
             if t_iter == self.cfg.train.num_steps and is_main_process():
+            if t_iter == self.cfg.train.num_steps and is_main_process():
                 pbar.close()
 
+            if t_iter % 1000 == 0 and is_main_process():
             if t_iter % 1000 == 0 and is_main_process():
                 with torch.no_grad():
                     pred_img = loss_extras['pred_img']
@@ -388,9 +418,13 @@ class GaussianTrainer():
                 (t_iter == self.cfg.train.num_steps and t_iter > 0):
                 if is_main_process():
                     self.save_ckpt(t_iter)
+                if is_main_process():
+                    self.save_ckpt(t_iter)
 
             # run validation
             if t_iter % self.cfg.train.val_interval == 0 and t_iter > 0:
+                if is_main_process():
+                    self.validate(t_iter)
                 if is_main_process():
                     self.validate(t_iter)
             
@@ -400,11 +434,26 @@ class GaussianTrainer():
                         self.scene_gs.save_ply(f'{self.cfg.logdir}/meshes/scene_{t_iter:06d}_splat.ply')
                     if self.human_gs:
                         save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                if is_main_process():
+                    if self.scene_gs:
+                        self.scene_gs.save_ply(f'{self.cfg.logdir}/meshes/scene_{t_iter:06d}_splat.ply')
+                    if self.human_gs:
+                        save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
 
+                    if self.cfg.mode in ['human', 'human_scene']:
+                        self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
                     if self.cfg.mode in ['human', 'human_scene']:
                         self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
                 
             if t_iter % self.cfg.train.anim_interval == 0 and t_iter > 0 and self.cfg.train.anim_interval > 0:
+                if is_main_process():
+                    if self.human_gs:
+                        save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                    if self.anim_dataset is not None:
+                        self.animate(t_iter)
+                        
+                    if self.cfg.mode in ['human', 'human_scene']:
+                        self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
                 if is_main_process():
                     if self.human_gs:
                         save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
