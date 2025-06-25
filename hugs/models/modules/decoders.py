@@ -149,7 +149,7 @@ class NonRigidDeformer(nn.Module):
         self.ln2 = nn.LayerNorm(hidden_dim + self.input_dim)
         self.fc5 = nn.Linear(hidden_dim + self.input_dim, hidden_dim)
         self.fc_out = nn.Linear(hidden_dim, 3)
-        # Zero-initialize last layer
+        
         nn.init.constant_(self.fc_out.weight, 0.0)
         nn.init.constant_(self.fc_out.bias, 0.0)
 
