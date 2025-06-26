@@ -83,6 +83,7 @@ def main():
     parser.add_argument('--config', type=str, default='cfg_files/release/neuman/hugs_human.yaml')
     parser.add_argument('--gpus', type=str, default='0', 
                        help='Comma-separated list of GPU devices to use (e.g., "0,2,3,4")')
+    parser.add_argument('overrides', nargs='*', help='Additional configuration overrides in the format key=value')
     args = parser.parse_args()
     
     # Parse GPU devices
@@ -98,6 +99,11 @@ def main():
     # Load config
     cfg = OmegaConf.load(args.config)
     cfg = OmegaConf.merge(default_cfg, cfg)
+    
+    # Apply any additional overrides
+    if args.overrides:
+        overrides = OmegaConf.from_dotlist(args.overrides)
+        cfg = OmegaConf.merge(cfg, overrides)
     
     # Launch distributed training if multiple GPUs
     if world_size > 1:
