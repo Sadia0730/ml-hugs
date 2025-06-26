@@ -74,19 +74,12 @@ class HUGS_TRIMLP:
         triplane_res=256,
         betas=None,
     ):
-        self.only_rgb = only_rgb
+        super().__init__()
+        
+        self.device = "cuda"
+        self.max_sh_degree = sh_degree
         self.active_sh_degree = 0
-        self.max_sh_degree = sh_degree  
-        self._xyz = torch.empty(0)
-        self.scaling_multiplier = torch.empty(0)
-
-        self.max_radii2D = torch.empty(0)
-        self.xyz_gradient_accum = torch.empty(0)
-        self.denom = torch.empty(0)
-        self.optimizer = None
-        self.percent_dense = 0
-        self.spatial_lr_scale = 0
-        self.device = 'cuda'
+        self.only_rgb = only_rgb
         self.use_surface = use_surface
         self.init_2d = init_2d
         self.rotate_sh = rotate_sh
@@ -95,10 +88,28 @@ class HUGS_TRIMLP:
         self.use_deformer = use_deformer
         self.disable_posedirs = disable_posedirs
         
-        self.deformer = 'smpl'
-
+        if n_subdivision > 0:
+            logger.info(f"Subdividing SMPL model {n_subdivision} times")
+            self.smpl_template = subdivide_smpl_model(smoothing=True, n_iter=n_subdivision).to(self.device)
+        else:
+            self.smpl_template = SMPL(SMPL_PATH).to(self.device)
+            
+        self.smpl = SMPL(SMPL_PATH).to(self.device)
+            
+        edges = trimesh.Trimesh(
+            vertices=self.smpl_template.v_template.detach().cpu().numpy(), 
+            faces=self.smpl_template.faces, process=False
+        ).edges_unique
+        self.edges = torch.from_numpy(edges).to(self.device).long()
+        
+        self.init_values = {}
+        
+        # Initialize betas if provided
         if betas is not None:
             self.create_betas(betas, requires_grad=False)
+            self.get_vitruvian_verts()
+        
+        self.setup_functions()
         
         self.triplane = TriPlane(n_features, resX=triplane_res, resY=triplane_res, resZ=triplane_res).to('cuda')
         self.appearance_dec = AppearanceDecoder(n_features=n_features*3).to('cuda')
@@ -118,24 +129,12 @@ class HUGS_TRIMLP:
         xyz_dim = 3
         self.nonrigid_deformer = NonRigidDeformer(input_dim=pose_dim + xyz_dim, triplane_dim=triplane_dim, act='gelu').to('cuda')
         
-        if n_subdivision > 0:
-            logger.info(f"Subdividing SMPL model {n_subdivision} times")
-            self.smpl_template = subdivide_smpl_model(smoothing=True, n_iter=n_subdivision).to(self.device)
-        else:
-            self.smpl_template = SMPL(SMPL_PATH).to(self.device)
-            
-        self.smpl = SMPL(SMPL_PATH).to(self.device)
-            
-        edges = trimesh.Trimesh(
-            vertices=self.smpl_template.v_template.detach().cpu().numpy(), 
-            faces=self.smpl_template.faces, process=False
-        ).edges_unique
-        self.edges = torch.from_numpy(edges).to(self.device).long()
-        
-        self.init_values = {}
-        self.get_vitruvian_verts()
-        
-        self.setup_functions()
+        self.max_radii2D = torch.empty(0)
+        self.xyz_gradient_accum = torch.empty(0)
+        self.denom = torch.empty(0)
+        self.optimizer = None
+        self.percent_dense = 0
+        self.spatial_lr_scale = 0
     
     def create_body_pose(self, body_pose, requires_grad=False):
         body_pose = axis_angle_to_rotation_6d(body_pose.reshape(-1, 3)).reshape(-1, 23*6)

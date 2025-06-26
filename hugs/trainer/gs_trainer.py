@@ -107,12 +107,11 @@ class GaussianTrainer():
                 if dist.is_initialized():
                     self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
             
-                
-                # Convert to DDP if using distributed training
-                if dist.is_initialized():
-                    self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
-            
             elif cfg.human.name == 'hugs_trimlp':
+                # Get initial betas from dataset
+                init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
+                
+                # Create HUGS_TRIMLP model with initial betas
                 self.human_gs = HUGS_TRIMLP(
                     sh_degree=cfg.human.sh_degree, 
                     n_subdivision=cfg.human.n_subdivision,  
@@ -124,16 +123,10 @@ class GaussianTrainer():
                     use_deformer=cfg.human.use_deformer,
                     disable_posedirs=cfg.human.disable_posedirs,
                     triplane_res=cfg.human.triplane_res,
+                    betas=init_betas[0]  # Pass initial betas to constructor
                 )
-                init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
-                init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
-                self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
-                self.human_gs.initialize()
                 
-                # Convert to DDP if using distributed training
-                if dist.is_initialized():
-                    self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
-            
+                # Initialize the model
                 self.human_gs.initialize()
                 
                 # Convert to DDP if using distributed training
@@ -144,10 +137,6 @@ class GaussianTrainer():
             self.scene_gs = SceneGS(
                 sh_degree=cfg.scene.sh_degree,
             )
-            
-            # Convert to DDP if using distributed training
-            if dist.is_initialized():
-                self.scene_gs = convert_model_to_ddp(self.scene_gs, self.device)
             
             # Convert to DDP if using distributed training
             if dist.is_initialized():
