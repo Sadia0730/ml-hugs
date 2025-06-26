@@ -5,6 +5,7 @@
 
 import torch
 import trimesh
+import torch.nn as nn
 from torch import nn
 from loguru import logger
 import torch.nn.functional as F
@@ -39,7 +40,7 @@ from hugs.utils.geometry import compute_pointcloud_normals
 SCALE_Z = 1e-5
 
 
-class HUGS_TRIMLP:
+class HUGS_TRIMLP(nn.Module):
 
     def setup_functions(self):
         def build_covariance_from_scaling_rotation(scaling, scaling_modifier, rotation):
@@ -74,7 +75,7 @@ class HUGS_TRIMLP:
         triplane_res=256,
         betas=None,
     ):
-        super().__init__()
+        super(HUGS_TRIMLP, self).__init__()
         
         self.device = "cuda"
         self.max_sh_degree = sh_degree
@@ -672,7 +673,7 @@ class HUGS_TRIMLP:
     def initialize(self):
         t_pose_verts = self.get_vitruvian_verts_template()
         
-        self.scaling_multiplier = torch.ones((t_pose_verts.shape[0], 1), device="cuda")
+        self.scaling_multiplier = nn.Parameter(torch.ones((t_pose_verts.shape[0], 1), device="cuda"), requires_grad=True)
         
         xyz_offsets = torch.zeros_like(t_pose_verts)
         colors = torch.ones_like(t_pose_verts) * 0.5
@@ -717,7 +718,7 @@ class HUGS_TRIMLP:
         rotq = matrix_to_quaternion(norm_rotmat)
         rot6d = matrix_to_rotation_6d(norm_rotmat)
                 
-        self.normals = gs_normals
+        self.normals = nn.Parameter(gs_normals, requires_grad=True)
         deformed_normals = (norm_rotmat @ gs_normals.unsqueeze(-1)).squeeze(-1)
         
         opacity = 0.1 * torch.ones((t_pose_verts.shape[0], 1), dtype=torch.float, device="cuda")
@@ -728,7 +729,7 @@ class HUGS_TRIMLP:
         self.n_gs = t_pose_verts.shape[0]
         self._xyz = nn.Parameter(t_pose_verts.requires_grad_(True))
         
-        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+        self.max_radii2D = nn.Parameter(torch.zeros((self.get_xyz.shape[0]), device="cuda"), requires_grad=True)
         return {
             'xyz_offsets': xyz_offsets,
             'scales': scales,
