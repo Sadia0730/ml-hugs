@@ -598,11 +598,11 @@ class HUGS_TRIMLP(nn.Module):
             deformed_gs_rotq = quaternion_multiply(rotq, deformed_gs_rotq)
             deformed_gs_rotmat = quaternion_to_matrix(deformed_gs_rotq)
         
-        self.normals = torch.zeros_like(gs_xyz)
-        self.normals[:, 2] = 1.0
+        normals = torch.zeros_like(gs_xyz)
+        normals[:, 2] = 1.0
         
-        canon_normals = (gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
-        deformed_normals = (deformed_gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
+        canon_normals = (gs_rotmat @ normals.unsqueeze(-1)).squeeze(-1)
+        deformed_normals = (deformed_gs_rotmat @ normals.unsqueeze(-1)).squeeze(-1)
         
         deformed_gs_shs = gs_shs.clone()
         print(self._xyz.shape)

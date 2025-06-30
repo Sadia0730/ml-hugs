@@ -32,12 +32,13 @@ from hugs.utils.distributed import (
     set_random_seeds
 )
 
-def get_logger(cfg, rank=-1):
+def get_logger(cfg, rank=-1, time_str=None):
     if rank != -1 and not is_main_process():
         return
         
     output_path = cfg.output_path
-    time_str = time.strftime("%Y-%m-%d_%H-%M-%S")
+    if time_str is None:
+        time_str = time.strftime("%Y-%m-%d_%H-%M-%S")
     mode = 'eval' if cfg.eval else 'train'
     
     # Handle sequence being a list - use first sequence for logging
@@ -86,9 +87,31 @@ def train_worker(rank, world_size, cfg, devices):
         
         logger.info(f"Worker {rank} using CUDA device {device_id}")
         
-        # Setup logging only on main process
+        # Generate shared timestamp for all processes
+        time_str = time.strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Setup logging only on main process, but ensure all processes have logdir
         if rank == 0:  # Use rank instead of is_main_process() for initial setup
-            get_logger(cfg, rank)
+            get_logger(cfg, rank, time_str)
+        else:
+            # Non-main processes need logdir set for saving images
+            output_path = cfg.output_path
+            seq = cfg.dataset.seq[0] if isinstance(cfg.dataset.seq, (list, ListConfig)) else cfg.dataset.seq
+            
+            if cfg.mode in ['human', 'human_scene']:
+                logdir = os.path.join(
+                    output_path, cfg.mode, cfg.dataset.name,
+                    seq, cfg.human.name, cfg.exp_name, 
+                    time_str,
+                )
+            else:
+                logdir = os.path.join(
+                    output_path, cfg.mode, cfg.dataset.name,
+                    seq, cfg.exp_name,
+                    time_str,
+                )
+            cfg.logdir = logdir
+            cfg.logdir_ckpt = os.path.join(logdir, 'ckpt')
         
         # Add device information to config
         cfg.device = device_id
