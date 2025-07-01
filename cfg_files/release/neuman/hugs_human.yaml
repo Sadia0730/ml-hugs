@@ -12,10 +12,10 @@ dataset:
   name: neuman
   seq: ["citron", "seattle", "bike", "lab", "jogging", "parkinglot"]
 train:
-  batch_size: 1
-  num_workers: 0
+  batch_size: 4
+  num_workers: 4
   num_steps: 14998
-  save_ckpt_interval: 15000
+  save_ckpt_interval: 2000
   val_interval: 1000
   anim_interval: 15000
   optim_scene: true
@@ -76,8 +76,8 @@ human:
     lpips_w: 1.0
     lbs_w: 1000.0
     humansep_w: 0.0
-    num_patches: 4
-    patch_size: 128
+    num_patches: 8
+    patch_size: 256
     use_patches: 1
   densification_interval: 600
   opacity_reset_interval: 3000
