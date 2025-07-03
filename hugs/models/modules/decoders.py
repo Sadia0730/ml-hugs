@@ -111,14 +111,12 @@ class GeometryDecoder(torch.nn.Module):
         }
 
 class FiLMModulation(nn.Module):
-    def __init__(self, pose_dim, triplane_dim, hidden_dim=128):
+    def __init__(self, pose_dim, triplane_dim, hidden_dim=96):  # Reduced from 128 to 96
         super().__init__()
         self.film_net = nn.Sequential(
             nn.Linear(pose_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, triplane_dim * 2)  # gamma and beta
+            nn.Linear(hidden_dim, triplane_dim * 2)  # gamma and beta - removed middle layer
         )
     
     def forward(self, pose, triplane_feats):
@@ -128,10 +126,10 @@ class FiLMModulation(nn.Module):
         return gamma * triplane_feats + beta
 
 class NonRigidDeformer(nn.Module):
-    def __init__(self, input_dim=75, triplane_dim=96, hidden_dim=256, act='gelu', use_film=True):
+    def __init__(self, input_dim=75, triplane_dim=96, hidden_dim=192, act='gelu', use_film=True):
         super().__init__()
         self.input_dim = input_dim + triplane_dim  # posevec + xyz + triplane_feats
-        self.hidden_dim = hidden_dim
+        self.hidden_dim = hidden_dim  # Reduced from 256 to 192
         self.act = act_fn_dict[act]
         self.use_film = use_film
         self.pose_dim = input_dim - 3  # Remove xyz from input_dim
@@ -139,15 +137,13 @@ class NonRigidDeformer(nn.Module):
         self.triplane_dim = triplane_dim
         
         if use_film:
-            self.film = FiLMModulation(self.pose_dim, triplane_dim)
+            self.film = FiLMModulation(self.pose_dim, triplane_dim, hidden_dim=96)  # Reduced from 128
         
+        # Simplified architecture - fewer layers and concatenations
         self.fc1 = nn.Linear(self.input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.ln1 = nn.LayerNorm(hidden_dim + self.input_dim)
-        self.fc3 = nn.Linear(hidden_dim + self.input_dim, hidden_dim)
-        self.fc4 = nn.Linear(hidden_dim, hidden_dim)
-        self.ln2 = nn.LayerNorm(hidden_dim + self.input_dim)
-        self.fc5 = nn.Linear(hidden_dim + self.input_dim, hidden_dim)
+        self.ln1 = nn.LayerNorm(hidden_dim)  # Simpler normalization
+        self.fc3 = nn.Linear(hidden_dim, hidden_dim)
         self.fc_out = nn.Linear(hidden_dim, 3)
         
         nn.init.constant_(self.fc_out.weight, 0.0)
@@ -164,22 +160,20 @@ class NonRigidDeformer(nn.Module):
             modulated_triplane = self.film(pose, triplane_feats)
             x = torch.cat([pose, xyz, modulated_triplane], dim=-1)
         
+        # Simplified forward pass - fewer layers, one residual connection
         h = self.act(self.fc1(x))
         h = self.act(self.fc2(h))
-        h = torch.cat([h, x], dim=-1)
+        residual = h  # Store for residual connection
         h = self.ln1(h)
         h = self.act(self.fc3(h))
-        h = self.act(self.fc4(h))
-        h = torch.cat([h, x], dim=-1)
-        h = self.ln2(h)
-        h = self.act(self.fc5(h))
+        h = h + residual  # Residual connection
         delta = self.fc_out(h)
         return xyz + delta  # residual connection
 
-    def smoothness_loss(self, delta, xyz, k=8, max_points=1024):
-        # delta: (N, 3), xyz: (N, 3)
+    def smoothness_loss(self, delta, xyz, k=6, max_points=768):
+        # delta: (N, 3), xyz: (N, 3) - Reduced k and max_points for efficiency
         N = delta.shape[0]
-        if N > 2048:
+        if N > max_points:
             idx = torch.randperm(N, device=delta.device)[:max_points]
             delta = delta[idx]
             xyz = xyz[idx]

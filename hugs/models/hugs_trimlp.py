@@ -128,7 +128,11 @@ class HUGS_TRIMLP(nn.Module):
         else:
             pose_dim = 138  # fallback to 23*6
         xyz_dim = 3
-        self.nonrigid_deformer = NonRigidDeformer(input_dim=pose_dim + xyz_dim, triplane_dim=triplane_dim, act='gelu').to('cuda')
+        self.nonrigid_deformer = NonRigidDeformer(
+            input_dim=pose_dim + xyz_dim, 
+            triplane_dim=triplane_dim, 
+            act='gelu'
+        ).to('cuda')
         
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -399,8 +403,7 @@ class HUGS_TRIMLP(nn.Module):
             deformed_gs_rotq = quaternion_multiply(rotq, deformed_gs_rotq)
             deformed_gs_rotmat = quaternion_to_matrix(deformed_gs_rotq)
         
-        self.normals = torch.zeros_like(gs_xyz)
-        self.normals[:, 2] = 1.0
+        self.normals = gs_normals
         
         canon_normals = (gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
         deformed_normals = (deformed_gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
@@ -605,11 +608,11 @@ class HUGS_TRIMLP(nn.Module):
         deformed_normals = (deformed_gs_rotmat @ normals.unsqueeze(-1)).squeeze(-1)
         
         deformed_gs_shs = gs_shs.clone()
-        print(self._xyz.shape)
-        print(deformed_normals.shape)
-        print(gs_scales.shape)
-        print(gs_opacity.shape)
-        print(gs_shs.shape)
+        # print(self._xyz.shape)
+        # print(deformed_normals.shape)
+        # print(gs_scales.shape)
+        # print(gs_opacity.shape)
+        # print(gs_shs.shape)
 
         return {
             'xyz': deformed_xyz,
@@ -673,7 +676,7 @@ class HUGS_TRIMLP(nn.Module):
     def initialize(self):
         t_pose_verts = self.get_vitruvian_verts_template()
         
-        self.scaling_multiplier = nn.Parameter(torch.ones((t_pose_verts.shape[0], 1), device="cuda"), requires_grad=True)
+        self.scaling_multiplier = torch.ones((t_pose_verts.shape[0], 1), device="cuda")
         
         xyz_offsets = torch.zeros_like(t_pose_verts)
         colors = torch.ones_like(t_pose_verts) * 0.5
@@ -718,7 +721,7 @@ class HUGS_TRIMLP(nn.Module):
         rotq = matrix_to_quaternion(norm_rotmat)
         rot6d = matrix_to_rotation_6d(norm_rotmat)
                 
-        self.normals = nn.Parameter(gs_normals, requires_grad=True)
+        self.normals = gs_normals
         deformed_normals = (norm_rotmat @ gs_normals.unsqueeze(-1)).squeeze(-1)
         
         opacity = 0.1 * torch.ones((t_pose_verts.shape[0], 1), dtype=torch.float, device="cuda")
@@ -729,7 +732,7 @@ class HUGS_TRIMLP(nn.Module):
         self.n_gs = t_pose_verts.shape[0]
         self._xyz = nn.Parameter(t_pose_verts.requires_grad_(True))
         
-        self.max_radii2D = nn.Parameter(torch.zeros((self.get_xyz.shape[0]), device="cuda"), requires_grad=True)
+        self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         return {
             'xyz_offsets': xyz_offsets,
             'scales': scales,
