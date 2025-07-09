@@ -317,12 +317,44 @@ class HUGS_TRIMLP(nn.Module):
             posedirs = None
         
         if hasattr(self, 'global_orient') and global_orient is None:
-            global_orient = rotation_6d_to_axis_angle(
-                self.global_orient[dataset_idx].reshape(-1, 6)).reshape(3)
+            # Ensure dataset_idx is a single integer
+            if torch.is_tensor(dataset_idx):
+                dataset_idx = dataset_idx.item()
+            
+            # Get one frame's worth of global_orient (shape [6])
+            go_6d = self.global_orient[dataset_idx]  
+            
+            # Handle potential shape issues
+            if go_6d.numel() != 6:
+                # If we got more than 6 elements, take only the first frame
+                go_6d = go_6d.view(-1, 6)[0]  # Take first frame
+            elif go_6d.dim() > 1:
+                go_6d = go_6d.flatten()
+                
+            # Ensure we have exactly 6 elements
+            assert go_6d.numel() == 6, f"Expected 6 elements for global_orient, got {go_6d.numel()}"
+            
+            global_orient = rotation_6d_to_axis_angle(go_6d.reshape(1, 6)).reshape(3)
         
         if hasattr(self, 'body_pose') and body_pose is None:
-            body_pose = rotation_6d_to_axis_angle(
-                self.body_pose[dataset_idx].reshape(-1, 6)).reshape(23*3)
+            # Ensure dataset_idx is a single integer  
+            if torch.is_tensor(dataset_idx):
+                dataset_idx = dataset_idx.item()
+                
+            # Get one frame's worth of body_pose (shape [138])
+            bp_6d = self.body_pose[dataset_idx]
+            
+            # Handle potential shape issues
+            if bp_6d.numel() != 138:
+                # If we got more than 138 elements, take only the first frame
+                bp_6d = bp_6d.view(-1, 138)[0]  # Take first frame
+            elif bp_6d.dim() > 1:
+                bp_6d = bp_6d.flatten()
+                
+            # Ensure we have exactly 138 elements (23 joints * 6 rot6d)
+            assert bp_6d.numel() == 138, f"Expected 138 elements for body_pose, got {bp_6d.numel()}"
+            
+            body_pose = rotation_6d_to_axis_angle(bp_6d.reshape(-1, 6)).reshape(23*3)
             
         if hasattr(self, 'betas') and betas is None:
             betas = self.betas
@@ -515,12 +547,16 @@ class HUGS_TRIMLP(nn.Module):
             posedirs = None
         
         if hasattr(self, 'global_orient') and global_orient is None:
-            global_orient = rotation_6d_to_axis_angle(
-                self.global_orient[dataset_idx].reshape(-1, 6)).reshape(3)
-        
+            go_6d = self.global_orient[dataset_idx]
+            if go_6d.dim() > 1:
+                go_6d = go_6d.flatten()
+            global_orient = rotation_6d_to_axis_angle(go_6d.reshape(1, 6)).reshape(3)
         if hasattr(self, 'body_pose') and body_pose is None:
-            body_pose = rotation_6d_to_axis_angle(
-                self.body_pose[dataset_idx].reshape(-1, 6)).reshape(23*3)
+            # Ensure we only get one frame's worth of body_pose (shape [138])
+            bp_6d = self.body_pose[dataset_idx]  # This should be [138] for one frame
+            if bp_6d.dim() > 1:
+                bp_6d = bp_6d.flatten()  # Flatten in case it's [1, 138]
+            body_pose = rotation_6d_to_axis_angle(bp_6d.reshape(-1, 6)).reshape(23*3)
             
         if hasattr(self, 'betas') and betas is None:
             betas = self.betas

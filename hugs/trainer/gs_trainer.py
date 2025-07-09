@@ -14,6 +14,9 @@ from PIL import Image
 from tqdm import tqdm
 from lpips import LPIPS
 from loguru import logger
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, DistributedSampler
 
 from hugs.datasets.utils import (
     get_rotating_camera,
@@ -70,6 +73,7 @@ def get_anim_dataset(cfg):
 class GaussianTrainer():
     def __init__(self, cfg) -> None:
         self.cfg = cfg
+        device = torch.device(f"cuda:{cfg.device}")
         
         # get dataset
         if not cfg.eval:
@@ -78,7 +82,7 @@ class GaussianTrainer():
         self.anim_dataset = get_anim_dataset(cfg)
         
         self.eval_metrics = {}
-        self.lpips = LPIPS(net="alex", pretrained=True).to('cuda')
+        self.lpips = LPIPS(net="alex", pretrained=True).to(device)
         # get models
         self.human_gs, self.scene_gs = None, None
         
@@ -92,7 +96,7 @@ class GaussianTrainer():
                     rotate_sh=cfg.human.rotate_sh,
                     isotropic=cfg.human.isotropic,
                     init_scale_multiplier=cfg.human.init_scale_multiplier,
-                )
+                ).to(device)
                 init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
                 self.human_gs.initialize()
@@ -111,7 +115,7 @@ class GaussianTrainer():
                     disable_posedirs=cfg.human.disable_posedirs,
                     triplane_res=cfg.human.triplane_res,
                     betas=init_betas[0]
-                )
+                ).to(device)
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
                 if not cfg.eval:
                     self.human_gs.initialize()
@@ -120,7 +124,7 @@ class GaussianTrainer():
         if cfg.mode in ['scene', 'human_scene']:
             self.scene_gs = SceneGS(
                 sh_degree=cfg.scene.sh_degree,
-            )
+            ).to(device)
             
         # setup the optimizers
         if self.human_gs:
@@ -215,198 +219,171 @@ class GaussianTrainer():
                 pose_type=self.cfg.human.canon_pose_type
             )
 
-    def train(self):
-        if self.human_gs:
-            self.human_gs.train()
-
-        pbar = tqdm(range(self.cfg.train.num_steps+1), desc="Training")
-        
-        rand_idx_iter = RandomIndexIterator(len(self.train_dataset))
-        sgrad_means, sgrad_stds = [], []
-        for t_iter in range(self.cfg.train.num_steps+1):
-            render_mode = self.cfg.mode
-            
-            if self.scene_gs and self.cfg.train.optim_scene:
-                self.scene_gs.update_learning_rate(t_iter)
-            
-            if hasattr(self.human_gs, 'update_learning_rate'):
-                self.human_gs.update_learning_rate(t_iter)
-        
-            rnd_idx = next(rand_idx_iter)
-            data = self.train_dataset[rnd_idx]
-            
-            human_gs_out, scene_gs_out = None, None
-            
+        # DDP wrapping
+        if cfg.world_size > 1:
             if self.human_gs:
-                human_gs_out = self.human_gs.forward(
-                    smpl_scale=data['smpl_scale'][None],
-                    dataset_idx=rnd_idx,
-                    is_train=True,
-                    ext_tfs=None,
-                )
-            
+                self.human_gs = DDP(self.human_gs, device_ids=[cfg.device], output_device=cfg.device, find_unused_parameters=True)
             if self.scene_gs:
-                if t_iter >= self.cfg.scene.opt_start_iter:
-                    scene_gs_out = self.scene_gs.forward()
-                else:
-                    render_mode = 'human'
-            
-            bg_color = torch.rand(3, dtype=torch.float32, device="cuda")
-            
-            
-            if self.cfg.human.loss.humansep_w > 0.0 and render_mode == 'human_scene':
-                render_human_separate = True
-                human_bg_color = torch.rand(3, dtype=torch.float32, device="cuda")
-            else:
-                human_bg_color = None
-                render_human_separate = False
-            
-            render_pkg = render_human_scene(
-                data=data, 
-                human_gs_out=human_gs_out, 
-                scene_gs_out=scene_gs_out, 
-                bg_color=bg_color,
-                human_bg_color=human_bg_color,
-                render_mode=render_mode,
-                render_human_separate=render_human_separate,
-            )
-            
-            if self.human_gs:
-                self.human_gs.init_values['edges'] = self.human_gs.edges
-                        
-            loss, loss_dict, loss_extras = self.loss_fn(
-                data,
-                render_pkg,
-                human_gs_out,
-                render_mode=render_mode,
-                human_gs_init_values=self.human_gs.init_values if self.human_gs else None,
-                bg_color=bg_color,
-                human_bg_color=human_bg_color,
-            )
-            
-            # Add nonrigid deformer losses to monitoring
-            if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_reg'):
-                nonrigid_reg_loss = self.human_gs.loss_nonrigid_reg
-                nonrigid_smooth_loss = self.human_gs.loss_nonrigid_smooth
-                nonrigid_delta_mag = torch.norm(human_gs_out['nonrigid_delta'], dim=-1).mean()
-                
-                # Add to loss_dict for monitoring
-                loss_dict['nonrigid_reg'] = nonrigid_reg_loss
-                loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
-                loss_dict['nonrigid_delta_mag'] = nonrigid_delta_mag
-                
-                # Add to total loss with weights
-                loss = loss + self.cfg.human.loss.nonrigid_w * nonrigid_reg_loss
-                if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
-                    loss = loss + self.cfg.human.loss.nonrigid_smooth_w * nonrigid_smooth_loss
-            else:
-                loss = loss
-            loss.backward()
-            
-            loss_dict['loss'] = loss
-            
-            if t_iter % 10 == 0:
-                postfix_dict = {
-                    "#hp": f"{self.human_gs.n_gs/1000 if self.human_gs else 0:.1f}K",
-                    "#sp": f"{self.scene_gs.get_xyz.shape[0]/1000 if self.scene_gs else 0:.1f}K",
-                    'h_sh_d': self.human_gs.active_sh_degree if self.human_gs else 0,
-                    's_sh_d': self.scene_gs.active_sh_degree if self.scene_gs else 0,
-                }
-                for k, v in loss_dict.items():
-                    postfix_dict["l_"+k] = f"{v.item():.4f}"
-                        
-                pbar.set_postfix(postfix_dict)
-                pbar.update(10)
-                
-            if t_iter == self.cfg.train.num_steps:
-                pbar.close()
+                self.scene_gs = DDP(self.scene_gs, device_ids=[cfg.device], output_device=cfg.device, find_unused_parameters=True)
 
-            if t_iter % 1000 == 0:
-                with torch.no_grad():
-                    pred_img = loss_extras['pred_img']
-                    gt_img = loss_extras['gt_img']
-                    log_pred_img = (pred_img.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
-                    log_gt_img = (gt_img.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
-                    log_img = np.concatenate([log_gt_img, log_pred_img], axis=1)
-                    save_images(log_img, f'{self.cfg.logdir}/train/{t_iter:06d}.png')
-            
-            if t_iter >= self.cfg.scene.opt_start_iter:
-                if (t_iter - self.cfg.scene.opt_start_iter) < self.cfg.scene.densify_until_iter and self.cfg.mode in ['scene', 'human_scene']:
-                    render_pkg['scene_viewspace_points'] = render_pkg['viewspace_points']
-                    render_pkg['scene_viewspace_points'].grad = render_pkg['viewspace_points'].grad
-                        
-                    sgrad_mean, sgrad_std = render_pkg['scene_viewspace_points'].grad.mean(), render_pkg['scene_viewspace_points'].grad.std()
-                    sgrad_means.append(sgrad_mean.item())
-                    sgrad_stds.append(sgrad_std.item())
-                    with torch.no_grad():
-                        self.scene_densification(
-                            visibility_filter=render_pkg['scene_visibility_filter'],
-                            radii=render_pkg['scene_radii'],
-                            viewspace_point_tensor=render_pkg['scene_viewspace_points'],
-                            iteration=(t_iter - self.cfg.scene.opt_start_iter) + 1,
-                        )
-                        
-            if t_iter < self.cfg.human.densify_until_iter and self.cfg.mode in ['human', 'human_scene']:
-                render_pkg['human_viewspace_points'] = render_pkg['viewspace_points'][:human_gs_out['xyz'].shape[0]]
-                render_pkg['human_viewspace_points'].grad = render_pkg['viewspace_points'].grad[:human_gs_out['xyz'].shape[0]]
-                with torch.no_grad():
-                    self.human_densification(
-                        human_gs_out=human_gs_out,
-                        visibility_filter=render_pkg['human_visibility_filter'],
-                        radii=render_pkg['human_radii'],
-                        viewspace_point_tensor=render_pkg['human_viewspace_points'],
-                        iteration=t_iter+1,
+    def train(self):
+        # if self.human_gs:
+        #     self.human_gs.train()
+
+        # DataLoader with DistributedSampler
+        sampler = DistributedSampler(
+            self.train_dataset,
+            num_replicas=self.cfg.world_size,
+            rank=self.cfg.rank,
+            shuffle=True
+        )
+        loader = DataLoader(self.train_dataset, sampler=sampler, batch_size=1, num_workers=getattr(self.cfg.train, 'num_workers', 0), drop_last=True)
+
+        num_epochs = (self.cfg.train.num_steps // len(loader)) + 1
+        t_iter = 0
+        for epoch in range(num_epochs):
+            sampler.set_epoch(epoch)
+            if self.cfg.rank == 0:
+                pbar = tqdm(loader, desc=f"Epoch {epoch+1}/{num_epochs}")
+            else:
+                pbar = loader
+            for data in pbar:
+                if t_iter > self.cfg.train.num_steps:
+                    break
+                render_mode = self.cfg.mode
+                if self.scene_gs and self.cfg.train.optim_scene:
+                    self.scene_gs.update_learning_rate(t_iter)
+                if hasattr(self.human_gs, 'update_learning_rate'):
+                    self.human_gs.update_learning_rate(t_iter)
+                data = data[0] if isinstance(data, list) or isinstance(data, tuple) else data
+                human_gs_out, scene_gs_out = None, None
+                if self.human_gs:
+                    human_gs_out = self.human_gs.forward(
+                        smpl_scale=data['smpl_scale'][None],
+                        dataset_idx=None,
+                        is_train=True,
+                        ext_tfs=None,
                     )
-            
-            if self.human_gs:
-                self.human_gs.optimizer.step()
-                self.human_gs.optimizer.zero_grad(set_to_none=True)
-                
-            if self.scene_gs and self.cfg.train.optim_scene:
-                if t_iter >= self.cfg.scene.opt_start_iter:
-                    self.scene_gs.optimizer.step()
-                    self.scene_gs.optimizer.zero_grad(set_to_none=True)
-                
-            # save checkpoint
-            if (t_iter % self.cfg.train.save_ckpt_interval == 0 and t_iter > 0) or \
-                (t_iter == self.cfg.train.num_steps and t_iter > 0):
-                self.save_ckpt(t_iter)
-
-            # run validation
-            if t_iter % self.cfg.train.val_interval == 0 and t_iter > 0:
-                self.validate(t_iter)
-            
-            if t_iter == 0:
                 if self.scene_gs:
-                    self.scene_gs.save_ply(f'{self.cfg.logdir}/meshes/scene_{t_iter:06d}_splat.ply')
+                    if t_iter >= self.cfg.scene.opt_start_iter:
+                        scene_gs_out = self.scene_gs.forward()
+                    else:
+                        render_mode = 'human'
+                bg_color = torch.rand(3, dtype=torch.float32, device=self.cfg.device)
+                if self.cfg.human.loss.humansep_w > 0.0 and render_mode == 'human_scene':
+                    render_human_separate = True
+                    human_bg_color = torch.rand(3, dtype=torch.float32, device=self.cfg.device)
+                else:
+                    human_bg_color = None
+                    render_human_separate = False
+                render_pkg = render_human_scene(
+                    data=data, 
+                    human_gs_out=human_gs_out, 
+                    scene_gs_out=scene_gs_out, 
+                    bg_color=bg_color,
+                    human_bg_color=human_bg_color,
+                    render_mode=render_mode,
+                    render_human_separate=render_human_separate,
+                )
                 if self.human_gs:
-                    save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                    self.human_gs.init_values['edges'] = self.human_gs.edges
+                loss, loss_dict, loss_extras = self.loss_fn(
+                    data,
+                    render_pkg,
+                    human_gs_out,
+                    render_mode=render_mode,
+                    human_gs_init_values=self.human_gs.init_values if self.human_gs else None,
+                    bg_color=bg_color,
+                    human_bg_color=human_bg_color,
+                )
+                if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_reg'):
+                    nonrigid_reg_loss = self.human_gs.loss_nonrigid_reg
+                    nonrigid_smooth_loss = self.human_gs.loss_nonrigid_smooth
+                    nonrigid_delta_mag = torch.norm(human_gs_out['nonrigid_delta'], dim=-1).mean()
+                    loss_dict['nonrigid_reg'] = nonrigid_reg_loss
+                    loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
+                    loss_dict['nonrigid_delta_mag'] = nonrigid_delta_mag
+                    loss = loss + self.cfg.human.loss.nonrigid_w * nonrigid_reg_loss
+                    if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
+                        loss = loss + self.cfg.human.loss.nonrigid_smooth_w * nonrigid_smooth_loss
+                loss.backward()
+                loss_dict['loss'] = loss
+                # --- Densification logic (all ranks, but guard file writes) ---
+                if self.scene_gs and t_iter >= self.cfg.scene.opt_start_iter:
+                    if (t_iter - self.cfg.scene.opt_start_iter) < self.cfg.scene.densify_until_iter and self.cfg.mode in ['scene', 'human_scene']:
+                        render_pkg['scene_viewspace_points'] = render_pkg['viewspace_points']
+                        render_pkg['scene_viewspace_points'].grad = render_pkg['viewspace_points'].grad
+                        with torch.no_grad():
+                            self.scene_densification(
+                                visibility_filter=render_pkg['scene_visibility_filter'],
+                                radii=render_pkg['scene_radii'],
+                                viewspace_point_tensor=render_pkg['scene_viewspace_points'],
+                                iteration=(t_iter - self.cfg.scene.opt_start_iter) + 1,
+                            )
+                if self.human_gs and t_iter < self.cfg.human.densify_until_iter and self.cfg.mode in ['human', 'human_scene']:
+                    render_pkg['human_viewspace_points'] = render_pkg['viewspace_points'][:human_gs_out['xyz'].shape[0]]
+                    render_pkg['human_viewspace_points'].grad = render_pkg['viewspace_points'].grad[:human_gs_out['xyz'].shape[0]]
+                    with torch.no_grad():
+                        self.human_densification(
+                            human_gs_out=human_gs_out,
+                            visibility_filter=render_pkg['human_visibility_filter'],
+                            radii=render_pkg['human_radii'],
+                            viewspace_point_tensor=render_pkg['human_viewspace_points'],
+                            iteration=t_iter+1,
+                        )
+                # --- SH degree scheduling (all ranks, but .module for DDP) ---
+                if t_iter % 1000 == 0:
+                    if self.human_gs:
+                        if hasattr(self.human_gs, 'module'):
+                            self.human_gs.module.oneupSHdegree()
+                        else:
+                            self.human_gs.oneupSHdegree()
+                    if self.scene_gs:
+                        if hasattr(self.scene_gs, 'module'):
+                            self.scene_gs.module.oneupSHdegree()
+                        else:
+                            self.scene_gs.oneupSHdegree()
+                # --- Progress bar, checkpointing, validation, animation (rank 0 only) ---
+                if self.cfg.rank == 0 and t_iter % 10 == 0:
+                    postfix_dict = {
+                        "#hp": f"{self.human_gs.module.n_gs/1000 if hasattr(self.human_gs, 'module') else self.human_gs.n_gs/1000 if self.human_gs else 0:.1f}K",
+                        "#sp": f"{self.scene_gs.module.get_xyz.shape[0]/1000 if hasattr(self.scene_gs, 'module') else self.scene_gs.get_xyz.shape[0]/1000 if self.scene_gs else 0:.1f}K",
+                        'h_sh_d': self.human_gs.module.active_sh_degree if hasattr(self.human_gs, 'module') else self.human_gs.active_sh_degree if self.human_gs else 0,
+                        's_sh_d': self.scene_gs.module.active_sh_degree if hasattr(self.scene_gs, 'module') else self.scene_gs.active_sh_degree if self.scene_gs else 0,
+                    }
+                    for k, v in loss_dict.items():
+                        postfix_dict["l_"+k] = f"{v.item():.4f}"
+                    if hasattr(pbar, 'set_postfix'):
+                        pbar.set_postfix(postfix_dict)
+                    if t_iter == self.cfg.train.num_steps:
+                        if hasattr(pbar, 'close'):
+                            pbar.close()
+                if self.cfg.rank == 0 and t_iter % self.cfg.train.save_ckpt_interval == 0 and t_iter > 0:
+                    self.save_ckpt(t_iter)
+                if self.cfg.rank == 0 and t_iter % self.cfg.train.val_interval == 0 and t_iter > 0:
+                    self.validate(t_iter)
+                if self.cfg.rank == 0 and t_iter % self.cfg.train.anim_interval == 0 and t_iter > 0 and self.cfg.train.anim_interval > 0:
+                    if self.human_gs:
+                        save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                    if self.anim_dataset is not None:
+                        self.animate(t_iter)
+                    if self.cfg.mode in ['human', 'human_scene']:
+                        self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
+                if self.human_gs:
+                    self.human_gs.optimizer.step()
+                    self.human_gs.optimizer.zero_grad(set_to_none=True)
+                if self.scene_gs and self.cfg.train.optim_scene:
+                    if t_iter >= self.cfg.scene.opt_start_iter:
+                        self.scene_gs.optimizer.step()
+                        self.scene_gs.optimizer.zero_grad(set_to_none=True)
+                t_iter += 1
+        # Only rank 0 saves final checkpoint
+        if self.cfg.rank == 0:
+            self.save_ckpt()
+        # Cleanup DDP
+        if self.cfg.world_size > 1:
+            dist.destroy_process_group()
 
-                if self.cfg.mode in ['human', 'human_scene']:
-                    self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
-                
-            if t_iter % self.cfg.train.anim_interval == 0 and t_iter > 0 and self.cfg.train.anim_interval > 0:
-                if self.human_gs:
-                    save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
-                if self.anim_dataset is not None:
-                    self.animate(t_iter)
-                    
-                if self.cfg.mode in ['human', 'human_scene']:
-                    self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
-            
-            if t_iter % 1000 == 0 and t_iter > 0:
-                if self.human_gs: self.human_gs.oneupSHdegree()
-                if self.scene_gs: self.scene_gs.oneupSHdegree()
-                
-            if self.cfg.train.save_progress_images and t_iter % self.cfg.train.progress_save_interval == 0 and self.cfg.mode in ['human', 'human_scene']:
-                self.render_canonical(t_iter, nframes=2, is_train_progress=True)
-        
-        # train progress images
-        if self.cfg.train.save_progress_images:
-            video_fname = f'{self.cfg.logdir}/train_{self.cfg.dataset.name}_{self.cfg.dataset.seq}.mp4'
-            create_video(f'{self.cfg.logdir}/train_progress/', video_fname, fps=10)
-            shutil.rmtree(f'{self.cfg.logdir}/train_progress/')
-            
     def save_ckpt(self, iter=None):
         
         iter_s = 'final' if iter is None else f'{iter:06d}'
@@ -714,9 +691,9 @@ class GaussianTrainer():
             canon_forward_out = self.human_gs.canon_forward()
         
         pbar = tqdm(range(nframes), desc="Canonical:")
-        if bg_color is 'white':
+        if bg_color == 'white':
             bg_color = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-        elif bg_color is 'black':
+        elif bg_color == 'black':
             bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
             
             
