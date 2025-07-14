@@ -263,6 +263,9 @@ class GaussianTrainer():
                 data = data[0] if isinstance(data, list) or isinstance(data, tuple) else data
                 idx_tensor = data.pop('dataset_idx')
                 dataset_idx = idx_tensor.item()
+                for k, v in list(data.items()):
+                    if torch.is_tensor(v) and v.dim() > 0 and v.size(0) == 1:
+                        data[k] = v.squeeze(0)
                 human_gs_out, scene_gs_out = None, None
                 if self.human_gs:
                     human_gs_out = self.human_gs.forward(
