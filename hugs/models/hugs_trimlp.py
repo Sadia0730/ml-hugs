@@ -545,19 +545,17 @@ class HUGS_TRIMLP(nn.Module):
         else:
             lbs_weights = None
             posedirs = None
-        
+        print("Dataset Index:", dataset_idx)
+        print("Global Orientation:", global_orient)
+        print("Body Pose:", body_pose)
         if hasattr(self, 'global_orient') and global_orient is None:
-            go_6d = self.global_orient[dataset_idx]
-            if go_6d.dim() > 1:
-                go_6d = go_6d.flatten()
-            global_orient = rotation_6d_to_axis_angle(go_6d.reshape(1, 6)).reshape(3)
+            global_orient = rotation_6d_to_axis_angle(
+                self.global_orient[dataset_idx].reshape(-1, 6)).reshape(3)
+        
         if hasattr(self, 'body_pose') and body_pose is None:
-            # Ensure we only get one frame's worth of body_pose (shape [138])
-            bp_6d = self.body_pose[dataset_idx]  # This should be [138] for one frame
-            if bp_6d.dim() > 1:
-                bp_6d = bp_6d.flatten()  # Flatten in case it's [1, 138]
-            body_pose = rotation_6d_to_axis_angle(bp_6d.reshape(-1, 6)).reshape(23*3)
-            
+            body_pose = rotation_6d_to_axis_angle(
+                self.body_pose[dataset_idx].reshape(-1, 6)).reshape(23*3)
+        
         if hasattr(self, 'betas') and betas is None:
             betas = self.betas
             

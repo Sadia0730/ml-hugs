@@ -19,7 +19,7 @@ def setup_distributed(rank, world_size, devices):
     try:
         # Set master address - use localhost for single-machine
         os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
+        os.environ['MASTER_PORT'] = '12356'
         
         # Get the actual GPU device for this rank - now using remapped index
         device = devices[rank]  # This is already the remapped index

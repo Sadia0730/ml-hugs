@@ -241,6 +241,11 @@ class GaussianTrainer():
 
         num_epochs = (self.cfg.train.num_steps // len(loader)) + 1
         t_iter = 0
+        print(f"num_workers: {getattr(self.cfg.train, 'num_workers', 0)}")
+        print(f"rank: {self.cfg.rank}")
+        print(f"world_size: {self.cfg.world_size}")
+        print(f"num_epochs: {num_epochs}")
+        print(f"dataset size: {len(self.train_dataset)}")
         for epoch in range(num_epochs):
             sampler.set_epoch(epoch)
             if self.cfg.rank == 0:
@@ -256,11 +261,13 @@ class GaussianTrainer():
                 if hasattr(self.human_gs, 'update_learning_rate'):
                     self.human_gs.update_learning_rate(t_iter)
                 data = data[0] if isinstance(data, list) or isinstance(data, tuple) else data
+                idx_tensor = data.pop('dataset_idx')
+                dataset_idx = idx_tensor.item()
                 human_gs_out, scene_gs_out = None, None
                 if self.human_gs:
                     human_gs_out = self.human_gs.forward(
                         smpl_scale=data['smpl_scale'][None],
-                        dataset_idx=None,
+                        dataset_idx=dataset_idx,
                         is_train=True,
                         ext_tfs=None,
                     )

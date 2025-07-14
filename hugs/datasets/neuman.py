@@ -315,7 +315,7 @@ class NeumanDataset(torch.utils.data.Dataset):
             idx = self.val_split[i]
         elif self.split == "anim":
             idx = i
-        
+        # print(f'Index value: {idx}')
         cap = self.scene.captures[idx]
         
         datum = {}
@@ -361,7 +361,7 @@ class NeumanDataset(torch.utils.data.Dataset):
         full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
         camera_center = world_view_transform.inverse()[3, :3]
         cam_intrinsics = torch.from_numpy(cap.intrinsic_matrix).float()
-        
+     
         datum.update({
             "fovx": fovx,
             "fovy": fovy,
@@ -372,7 +372,8 @@ class NeumanDataset(torch.utils.data.Dataset):
             "full_proj_transform": full_proj_transform,
             "camera_center": camera_center,
             "cam_intrinsics": cam_intrinsics,
-            
+            "dataset_idx": idx,
+
             "betas": self.smpl_params["betas"][idx],
             "global_orient": self.smpl_params["global_orient"][idx],
             "body_pose": self.smpl_params["body_pose"][idx],
@@ -401,7 +402,15 @@ class NeumanDataset(torch.utils.data.Dataset):
             self.cached_data.append(datum)
                 
     def __getitem__(self, idx):
-        if self.cached_data is None:
-            return self.get_single_item(idx, is_src=True)
-        else:
-            return self.cached_data[idx]
+        # if self.cached_data is None:
+        #     return self.get_single_item(idx, is_src=True)
+        # else:
+        #     return self.cached_data[idx]
+                # Grab the pre‐loaded datum, but don’t mutate the cache in place
+        datum = self.cached_data[idx]
+        # Shallow‐copy so that downstream code (e.g. data.pop('dataset_idx')) is safe
+        item = {k: v for k, v in datum.items()}
+        # Tell the model which frame this is
+        item['dataset_idx'] = torch.tensor(idx, dtype=torch.long,
+                                          device=item['betas'].device)
+        return item

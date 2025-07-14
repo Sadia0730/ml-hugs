@@ -1,9 +1,9 @@
 === NonRigidDeformer Debug ===
-Input x shape: torch.Size([110210, 4239])
+Input x shape: torch.Size([110210, 237])
 pose shape: torch.Size([110210, 138])
 xyz shape: torch.Size([110210, 3])
-triplane_feats shape: torch.Size([110210, 4098])
+triplane_feats shape: torch.Size([110210, 96])
 self.pose_dim: 138
 self.xyz_dim: 3
 self.triplane_dim (expected): 96
-actual triplane_feats dim: 4098
+actual triplane_feats dim: 96
