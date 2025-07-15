@@ -105,10 +105,16 @@ class HUGS_TRIMLP(nn.Module):
         
         self.init_values = {}
         
-        # Initialize betas if provided
+        # Initialize betas - either provided or default zeros
         if betas is not None:
             self.create_betas(betas, requires_grad=False)
-            self.get_vitruvian_verts()
+        else:
+            # Create default betas as zeros (shape parameters for neutral body)
+            default_betas = torch.zeros(10, dtype=torch.float32, device=self.device)
+            self.create_betas(default_betas, requires_grad=False)
+            
+        # Get vitruvian vertices now that betas are available
+        self.get_vitruvian_verts()
         
         self.setup_functions()
         
@@ -213,10 +219,28 @@ class HUGS_TRIMLP(nn.Module):
             
     def __repr__(self):
         repr_str = "HUGS TRIMLP: \n"
-        repr_str += "xyz: {} \n".format(self._xyz.shape)
-        repr_str += "max_radii2D: {} \n".format(self.max_radii2D.shape)
-        repr_str += "xyz_gradient_accum: {} \n".format(self.xyz_gradient_accum.shape)
-        repr_str += "denom: {} \n".format(self.denom.shape)
+        
+        # Check if model has been initialized before accessing attributes
+        if hasattr(self, '_xyz') and self._xyz is not None:
+            repr_str += "xyz: {} \n".format(self._xyz.shape)
+        else:
+            repr_str += "xyz: Not initialized \n"
+            
+        if hasattr(self, 'max_radii2D') and self.max_radii2D is not None and self.max_radii2D.numel() > 0:
+            repr_str += "max_radii2D: {} \n".format(self.max_radii2D.shape)
+        else:
+            repr_str += "max_radii2D: Not initialized \n"
+            
+        if hasattr(self, 'xyz_gradient_accum') and self.xyz_gradient_accum is not None and self.xyz_gradient_accum.numel() > 0:
+            repr_str += "xyz_gradient_accum: {} \n".format(self.xyz_gradient_accum.shape)
+        else:
+            repr_str += "xyz_gradient_accum: Not initialized \n"
+            
+        if hasattr(self, 'denom') and self.denom is not None and self.denom.numel() > 0:
+            repr_str += "denom: {} \n".format(self.denom.shape)
+        else:
+            repr_str += "denom: Not initialized \n"
+            
         return repr_str
 
     def canon_forward(self):

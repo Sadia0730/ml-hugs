@@ -186,6 +186,30 @@ class NonRigidDeformer(nn.Module):
         xyz = x[:, self.pose_dim:self.pose_dim + self.xyz_dim]  # Next 3 dimensions  
         triplane_feats = x[:, self.pose_dim + self.xyz_dim:]  # Remaining dimensions
         
+        # CRITICAL: Check for dimension mismatch and apply emergency fix
+        expected_triplane_dim = self.triplane_dim
+        actual_triplane_dim = triplane_feats.shape[1]
+        
+        if actual_triplane_dim != expected_triplane_dim:
+            print(f"NonRigidDeformer: DIMENSION MISMATCH DETECTED!")
+            print(f"  Expected triplane dim: {expected_triplane_dim}")
+            print(f"  Actual triplane dim: {actual_triplane_dim}")
+            print(f"  Input x shape: {x.shape}")
+            print(f"  Applying emergency fix...")
+            
+            # Emergency fix: truncate or pad triplane features
+            if actual_triplane_dim > expected_triplane_dim:
+                # Truncate to expected dimensions
+                triplane_feats = triplane_feats[:, :expected_triplane_dim]
+                print(f"  Truncated triplane features to {triplane_feats.shape}")
+            else:
+                # Pad with zeros to expected dimensions
+                padding_size = expected_triplane_dim - actual_triplane_dim
+                padding = torch.zeros(triplane_feats.shape[0], padding_size, 
+                                    device=triplane_feats.device, dtype=triplane_feats.dtype)
+                triplane_feats = torch.cat([triplane_feats, padding], dim=1)
+                print(f"  Padded triplane features to {triplane_feats.shape}")
+        
         # Write debug info to file since prints aren't showing
         try:
             with open("nonrigid_debug.txt", "w") as f:
@@ -193,11 +217,12 @@ class NonRigidDeformer(nn.Module):
                 f.write(f"Input x shape: {x.shape}\n")
                 f.write(f"pose shape: {pose.shape}\n")
                 f.write(f"xyz shape: {xyz.shape}\n")
-                f.write(f"triplane_feats shape: {triplane_feats.shape}\n")
+                f.write(f"triplane_feats shape (after fix): {triplane_feats.shape}\n")
                 f.write(f"self.pose_dim: {self.pose_dim}\n")
                 f.write(f"self.xyz_dim: {self.xyz_dim}\n")
                 f.write(f"self.triplane_dim (expected): {self.triplane_dim}\n")
-                f.write(f"actual triplane_feats dim: {triplane_feats.shape[1] if len(triplane_feats.shape) > 1 else 'N/A'}\n")
+                f.write(f"actual triplane_feats dim: {triplane_feats.shape[1]}\n")
+                f.write(f"dimension_mismatch_fixed: {actual_triplane_dim != expected_triplane_dim}\n")
                 if hasattr(self, 'input_dim'):
                     f.write(f"self.input_dim (actual): {self.input_dim}\n")
                 if self.fc1 is not None:

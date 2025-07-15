@@ -35,6 +35,7 @@ from hugs.renderer.gs_renderer import render_human_scene
 from hugs.utils.vis import save_ply
 from hugs.utils.image import psnr, save_image
 from hugs.utils.general import RandomIndexIterator, load_human_ckpt, save_images, create_video
+from hugs.utils.distributed import convert_model_to_ddp
 
 
 def get_train_dataset(cfg):
@@ -71,160 +72,73 @@ def get_anim_dataset(cfg):
 
 
 class GaussianTrainer():
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg):
         self.cfg = cfg
-        device = torch.device(f"cuda:{cfg.device}")
-        
-        # get dataset
-        if not cfg.eval:
-            self.train_dataset = get_train_dataset(cfg)
-        self.val_dataset = get_val_dataset(cfg)
-        self.anim_dataset = get_anim_dataset(cfg)
-        
-        self.eval_metrics = {}
-        self.lpips = LPIPS(net="alex", pretrained=True).to(device)
-        # get models
+        self.device = cfg.device
         self.human_gs, self.scene_gs = None, None
         
         if cfg.mode in ['human', 'human_scene']:
-            if cfg.human.name == 'hugs_wo_trimlp':
-                self.human_gs = HUGS_WO_TRIMLP(
-                    sh_degree=cfg.human.sh_degree, 
-                    n_subdivision=cfg.human.n_subdivision,  
-                    use_surface=cfg.human.use_surface,
-                    init_2d=cfg.human.init_2d,
-                    rotate_sh=cfg.human.rotate_sh,
-                    isotropic=cfg.human.isotropic,
-                    init_scale_multiplier=cfg.human.init_scale_multiplier,
-                ).to(device)
-                init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
-                self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
-                self.human_gs.initialize()
-            elif cfg.human.name == 'hugs_trimlp':
-                init_betas = torch.stack([x['betas'] for x in self.val_dataset.cached_data], dim=0)
-                self.human_gs = HUGS_TRIMLP(
-                    sh_degree=cfg.human.sh_degree, 
-                    n_subdivision=cfg.human.n_subdivision,  
-                    use_surface=cfg.human.use_surface,
-                    init_2d=cfg.human.init_2d,
-                    rotate_sh=cfg.human.rotate_sh,
-                    isotropic=cfg.human.isotropic,
-                    init_scale_multiplier=cfg.human.init_scale_multiplier,
-                    n_features=32,
-                    use_deformer=cfg.human.use_deformer,
-                    disable_posedirs=cfg.human.disable_posedirs,
-                    triplane_res=cfg.human.triplane_res,
-                    betas=init_betas[0]
-                ).to(device)
-                self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
-                if not cfg.eval:
-                    self.human_gs.initialize()
-                    self.human_gs = optimize_init(self.human_gs, num_steps=7000)
-        
-        if cfg.mode in ['scene', 'human_scene']:
-            self.scene_gs = SceneGS(
-                sh_degree=cfg.scene.sh_degree,
-            ).to(device)
+            # Define valid constructor parameters for both model types
+            valid_hugs_params = {
+                'sh_degree', 'only_rgb', 'n_subdivision', 'use_surface', 'init_2d', 
+                'rotate_sh', 'isotropic', 'init_scale_multiplier', 'n_features', 
+                'use_deformer', 'disable_posedirs', 'triplane_res', 'betas'
+            }
             
-        # setup the optimizers
+            # Filter configuration to only include valid constructor parameters
+            human_config = {k: v for k, v in cfg.human.items() if k in valid_hugs_params}
+            
+            if cfg.mode == 'human_scene' and not cfg.human.use_trimlp:
+                self.human_gs = HUGS_WO_TRIMLP(**human_config).to(self.device)
+            else:
+                self.human_gs = HUGS_TRIMLP(**human_config).to(self.device)
+            logger.info(f"Human Gaussian model created")
+            
+
+            
+        if cfg.mode in ['scene', 'human_scene']:
+            # Define valid constructor parameters for SceneGS
+            valid_scene_params = {'sh_degree', 'only_rgb'}
+            
+            # Filter configuration to only include valid constructor parameters
+            scene_config = {k: v for k, v in cfg.scene.items() if k in valid_scene_params}
+            
+            self.scene_gs = SceneGS(**scene_config).to(self.device)
+            if cfg.world_size > 1:
+                logger.info(f"Wrapping scene model in DDP on device {self.device}")
+                self.scene_gs = convert_model_to_ddp(self.scene_gs, self.device)
+            logger.info(f"Scene Gaussian model created")
+        
+        # CRITICAL: Initialize the human model BEFORE DDP wrapping
         if self.human_gs:
-            self.human_gs.setup_optimizer(cfg=cfg.human.lr)
-            logger.info(self.human_gs)
-            if cfg.human.ckpt:
-                # load_human_ckpt(self.human_gs, cfg.human.ckpt)
-                self.human_gs.load_state_dict(torch.load(cfg.human.ckpt))
-                logger.info(f'Loaded human model from {cfg.human.ckpt}')
-            else:
-                ckpt_files = sorted(glob.glob(f'{cfg.logdir_ckpt}/*human*.pth'))
-                if len(ckpt_files) > 0:
-                    ckpt = torch.load(ckpt_files[-1])
-                    self.human_gs.load_state_dict(ckpt)
-                    logger.info(f'Loaded human model from {ckpt_files[-1]}')
-
-            if not cfg.eval:
-                init_smpl_global_orient = torch.stack([x['global_orient'] for x in self.train_dataset.cached_data])
-                init_smpl_body_pose = torch.stack([x['body_pose'] for x in self.train_dataset.cached_data])
-                init_smpl_trans = torch.stack([x['transl'] for x in self.train_dataset.cached_data], dim=0)
-                init_betas = torch.stack([x['betas'] for x in self.train_dataset.cached_data], dim=0)
-                init_eps_offsets = torch.zeros((len(self.train_dataset), self.human_gs.n_gs, 3), 
-                                            dtype=torch.float32, device="cuda")
-
-                self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
-                
-                self.human_gs.create_body_pose(init_smpl_body_pose, cfg.human.optim_pose)
-                self.human_gs.create_global_orient(init_smpl_global_orient, cfg.human.optim_pose)
-                self.human_gs.create_transl(init_smpl_trans, cfg.human.optim_trans)
-                
-                self.human_gs.setup_optimizer(cfg=cfg.human.lr)
-                    
-        if self.scene_gs:
-            logger.info(self.scene_gs)
-            if cfg.scene.ckpt:
-                ckpt = torch.load(cfg.scene.ckpt)
-                self.scene_gs.restore(ckpt, cfg.scene.lr)
-                logger.info(f'Loaded scene model from {cfg.scene.ckpt}')
-            else:
-                ckpt_files = sorted(glob.glob(f'{cfg.logdir_ckpt}/*scene*.pth'))
-                if len(ckpt_files) > 0:
-                    ckpt = torch.load(ckpt_files[-1])
-                    self.scene_gs.restore(ckpt, cfg.scene.lr)
-                    logger.info(f'Loaded scene model from {cfg.scene.ckpt}')
-                else:
-                    pcd = self.train_dataset.init_pcd
-                    spatial_lr_scale = self.train_dataset.radius
-                    self.scene_gs.create_from_pcd(pcd, spatial_lr_scale)
-                
-            self.scene_gs.setup_optimizer(cfg=cfg.scene.lr)
+            logger.info("Initializing human Gaussian model...")
+            init_values = self.human_gs.initialize()
+            self.human_gs.setup_optimizer(cfg.human.lr)
+            logger.info(f"Human model initialized with {init_values['xyz_offsets'].shape[0]} Gaussians")
+            
+            # Now wrap in DDP if distributed - AFTER initialization
+            if cfg.world_size > 1:
+                logger.info(f"Wrapping initialized human model in DDP on device {self.device}")
+                self.human_gs = convert_model_to_ddp(self.human_gs, self.device)
         
-        bg_color = cfg.bg_color
-        if bg_color == 'white':
-            self.bg_color = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-        elif bg_color == 'black':
-            self.bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
-        else:
-            raise ValueError(f"Unknown background color {bg_color}")
+        logger.info(self.human_gs)
         
-        if cfg.mode in ['human', 'human_scene']:
-            l = cfg.human.loss
-
-            self.loss_fn = HumanSceneLoss(
-                l_ssim_w=l.ssim_w,
-                l_l1_w=l.l1_w,
-                l_lpips_w=l.lpips_w,
-                l_lbs_w=l.lbs_w,
-                l_humansep_w=l.humansep_w,
-                num_patches=l.num_patches,
-                patch_size=l.patch_size,
-                use_patches=l.use_patches,
-                bg_color=self.bg_color,
-            )
-        else:
-            self.cfg.train.optim_scene = True
-            l = cfg.scene.loss
-            self.loss_fn = HumanSceneLoss(
-                l_ssim_w=l.ssim_w,
-                l_l1_w=l.l1_w,
-                bg_color=self.bg_color,
-            )
-                
-        if cfg.mode in ['human', 'human_scene']:
-            self.canon_camera_params = get_rotating_camera(
-                dist=5.0, img_size=512, 
-                nframes=cfg.human.canon_nframes, device='cuda',
-                angle_limit=2*torch.pi,
-            )
-            betas = self.human_gs.betas.detach() if hasattr(self.human_gs, 'betas') else self.train_dataset.smpl_params['betas'][0]
-            self.static_smpl_params = get_smpl_static_params(
-                betas=betas,
-                pose_type=self.cfg.human.canon_pose_type
-            )
-
-        # DDP wrapping
-        if cfg.world_size > 1:
-            if self.human_gs:
-                self.human_gs = DDP(self.human_gs, device_ids=[cfg.device], output_device=cfg.device, find_unused_parameters=True)
-            if self.scene_gs:
-                self.scene_gs = DDP(self.scene_gs, device_ids=[cfg.device], output_device=cfg.device, find_unused_parameters=True)
+        # Initialize datasets
+        self.train_dataset = get_train_dataset(cfg)
+        self.val_dataset = get_val_dataset(cfg)
+        
+        # Initialize loss function
+        self.loss_fn = HumanSceneLoss(
+            l_ssim_w=cfg.human.loss.ssim_w,
+            l_l1_w=cfg.human.loss.l1_w,
+            l_lpips_w=cfg.human.loss.lpips_w,
+            l_lbs_w=cfg.human.loss.lbs_w,
+            l_humansep_w=cfg.human.loss.humansep_w,
+            num_patches=cfg.human.loss.num_patches,
+            patch_size=cfg.human.loss.patch_size,
+            use_patches=cfg.human.loss.use_patches,
+            bg_color=cfg.bg_color,
+        )
 
     def train(self):
         # if self.human_gs:
@@ -257,18 +171,38 @@ class GaussianTrainer():
                     break
                 render_mode = self.cfg.mode
                 if self.scene_gs and self.cfg.train.optim_scene:
-                    self.scene_gs.update_learning_rate(t_iter)
-                if hasattr(self.human_gs, 'update_learning_rate'):
-                    self.human_gs.update_learning_rate(t_iter)
+                    if hasattr(self.scene_gs, 'module'):
+                        self.scene_gs.module.update_learning_rate(t_iter)
+                    else:
+                        self.scene_gs.update_learning_rate(t_iter)
+                        
+                if self.human_gs:
+                    model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs
+                    if hasattr(model, 'update_learning_rate'):
+                        model.update_learning_rate(t_iter)
                 data = data[0] if isinstance(data, list) or isinstance(data, tuple) else data
-                idx_tensor = data.pop('dataset_idx')
-                dataset_idx = idx_tensor.item()
+                
+                # CRITICAL FIX: Extract dataset_idx safely and handle tensor conversion
+                if 'dataset_idx' in data:
+                    idx_tensor = data.pop('dataset_idx')
+                    dataset_idx = int(idx_tensor.item()) if torch.is_tensor(idx_tensor) else int(idx_tensor)
+                else:
+                    dataset_idx = -1  # Default fallback
+                
+                # CRITICAL FIX: Squeeze batch dimensions carefully to avoid breaking tensor shapes
                 for k, v in list(data.items()):
                     if torch.is_tensor(v) and v.dim() > 0 and v.size(0) == 1:
+                        # Only squeeze the first dimension if it's size 1
                         data[k] = v.squeeze(0)
+                
                 human_gs_out, scene_gs_out = None, None
                 if self.human_gs:
+                    # CRITICAL FIX: Pass all required parameters to the forward method
                     human_gs_out = self.human_gs.forward(
+                        global_orient=data.get('global_orient', None),
+                        body_pose=data.get('body_pose', None), 
+                        betas=data.get('betas', None),
+                        transl=data.get('transl', None),
                         smpl_scale=data['smpl_scale'][None],
                         dataset_idx=dataset_idx,
                         is_train=True,
@@ -296,19 +230,22 @@ class GaussianTrainer():
                     render_human_separate=render_human_separate,
                 )
                 if self.human_gs:
-                    self.human_gs.init_values['edges'] = self.human_gs.edges
+                    model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs
+                    model.init_values['edges'] = model.edges
+                human_model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs if self.human_gs else None
                 loss, loss_dict, loss_extras = self.loss_fn(
                     data,
                     render_pkg,
                     human_gs_out,
                     render_mode=render_mode,
-                    human_gs_init_values=self.human_gs.init_values if self.human_gs else None,
+                    human_gs_init_values=human_model.init_values if human_model else None,
                     bg_color=bg_color,
                     human_bg_color=human_bg_color,
                 )
-                if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_reg'):
-                    nonrigid_reg_loss = self.human_gs.loss_nonrigid_reg
-                    nonrigid_smooth_loss = self.human_gs.loss_nonrigid_smooth
+                model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs if self.human_gs else None
+                if model and hasattr(model, 'loss_nonrigid_reg'):
+                    nonrigid_reg_loss = model.loss_nonrigid_reg
+                    nonrigid_smooth_loss = model.loss_nonrigid_smooth
                     nonrigid_delta_mag = torch.norm(human_gs_out['nonrigid_delta'], dim=-1).mean()
                     loss_dict['nonrigid_reg'] = nonrigid_reg_loss
                     loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
@@ -355,11 +292,14 @@ class GaussianTrainer():
                             self.scene_gs.oneupSHdegree()
                 # --- Progress bar, checkpointing, validation, animation (rank 0 only) ---
                 if self.cfg.rank == 0 and t_iter % 10 == 0:
+                    human_model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs if self.human_gs else None
+                    scene_model = self.scene_gs.module if hasattr(self.scene_gs, 'module') else self.scene_gs if self.scene_gs else None
+                    
                     postfix_dict = {
-                        "#hp": f"{self.human_gs.module.n_gs/1000 if hasattr(self.human_gs, 'module') else self.human_gs.n_gs/1000 if self.human_gs else 0:.1f}K",
-                        "#sp": f"{self.scene_gs.module.get_xyz.shape[0]/1000 if hasattr(self.scene_gs, 'module') else self.scene_gs.get_xyz.shape[0]/1000 if self.scene_gs else 0:.1f}K",
-                        'h_sh_d': self.human_gs.module.active_sh_degree if hasattr(self.human_gs, 'module') else self.human_gs.active_sh_degree if self.human_gs else 0,
-                        's_sh_d': self.scene_gs.module.active_sh_degree if hasattr(self.scene_gs, 'module') else self.scene_gs.active_sh_degree if self.scene_gs else 0,
+                        "#hp": f"{human_model.n_gs/1000 if human_model and hasattr(human_model, 'n_gs') else 0:.1f}K",
+                        "#sp": f"{scene_model.get_xyz.shape[0]/1000 if scene_model and hasattr(scene_model, 'get_xyz') else 0:.1f}K",
+                        'h_sh_d': human_model.active_sh_degree if human_model and hasattr(human_model, 'active_sh_degree') else 0,
+                        's_sh_d': scene_model.active_sh_degree if scene_model and hasattr(scene_model, 'active_sh_degree') else 0,
                     }
                     for k, v in loss_dict.items():
                         postfix_dict["l_"+k] = f"{v.item():.4f}"
@@ -380,12 +320,14 @@ class GaussianTrainer():
                     if self.cfg.mode in ['human', 'human_scene']:
                         self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
                 if self.human_gs:
-                    self.human_gs.optimizer.step()
-                    self.human_gs.optimizer.zero_grad(set_to_none=True)
+                    model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs
+                    model.optimizer.step()
+                    model.optimizer.zero_grad(set_to_none=True)
                 if self.scene_gs and self.cfg.train.optim_scene:
                     if t_iter >= self.cfg.scene.opt_start_iter:
-                        self.scene_gs.optimizer.step()
-                        self.scene_gs.optimizer.zero_grad(set_to_none=True)
+                        scene_model = self.scene_gs.module if hasattr(self.scene_gs, 'module') else self.scene_gs
+                        scene_model.optimizer.step()
+                        scene_model.optimizer.zero_grad(set_to_none=True)
                 t_iter += 1
         # Only rank 0 saves final checkpoint
         if self.cfg.rank == 0:
@@ -408,15 +350,17 @@ class GaussianTrainer():
         logger.info(f'Saved checkpoint {iter_s}')
                 
     def scene_densification(self, visibility_filter, radii, viewspace_point_tensor, iteration):
-        self.scene_gs.max_radii2D[visibility_filter] = torch.max(
-            self.scene_gs.max_radii2D[visibility_filter], 
+        model = self.scene_gs.module if hasattr(self.scene_gs, 'module') else self.scene_gs
+        
+        model.max_radii2D[visibility_filter] = torch.max(
+            model.max_radii2D[visibility_filter], 
             radii[visibility_filter]
         )
-        self.scene_gs.add_densification_stats(viewspace_point_tensor, visibility_filter)
+        model.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
         if iteration > self.cfg.scene.densify_from_iter and iteration % self.cfg.scene.densification_interval == 0:
             size_threshold = 20 if iteration > self.cfg.scene.opacity_reset_interval else None
-            self.scene_gs.densify_and_prune(
+            model.densify_and_prune(
                 self.cfg.scene.densify_grad_threshold, 
                 min_opacity=self.cfg.scene.prune_min_opacity, 
                 extent=self.train_dataset.radius, 
@@ -428,19 +372,21 @@ class GaussianTrainer():
         
         if iteration % self.cfg.scene.opacity_reset_interval == 0 or (is_white and iteration == self.cfg.scene.densify_from_iter):
             logger.info(f"[{iteration:06d}] Resetting opacity!!!")
-            self.scene_gs.reset_opacity()
+            model.reset_opacity()
     
     def human_densification(self, human_gs_out, visibility_filter, radii, viewspace_point_tensor, iteration):
-        self.human_gs.max_radii2D[visibility_filter] = torch.max(
-            self.human_gs.max_radii2D[visibility_filter], 
+        model = self.human_gs.module if hasattr(self.human_gs, 'module') else self.human_gs
+        
+        model.max_radii2D[visibility_filter] = torch.max(
+            model.max_radii2D[visibility_filter], 
             radii[visibility_filter]
         )
         
-        self.human_gs.add_densification_stats(viewspace_point_tensor, visibility_filter)
+        model.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
         if iteration > self.cfg.human.densify_from_iter and iteration % self.cfg.human.densification_interval == 0:
             size_threshold = 20
-            self.human_gs.densify_and_prune(
+            model.densify_and_prune(
                 human_gs_out,
                 self.cfg.human.densify_grad_threshold, 
                 min_opacity=self.cfg.human.prune_min_opacity, 

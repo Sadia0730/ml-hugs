@@ -112,8 +112,66 @@ def convert_model_to_ddp(model, device):
     """
     if dist.is_initialized():
         try:
-            model = DDP(model, device_ids=[device], find_unused_parameters=True)
-            logger.info(f"Model converted to DDP on device {device}")
+            # CRITICAL: Check for triplane parameters before DDP wrapping
+            pre_ddp_info = {}
+            if hasattr(model, 'triplane'):
+                pre_ddp_info['triplane_xy'] = model.triplane.plane_xy.shape
+                pre_ddp_info['triplane_xz'] = model.triplane.plane_xz.shape
+                pre_ddp_info['triplane_yz'] = model.triplane.plane_yz.shape
+                pre_ddp_info['triplane_dim'] = model.triplane.dim
+                logger.info(f"Pre-DDP TriPlane parameters: {pre_ddp_info}")
+                
+                # Test triplane forward pass before DDP
+                with torch.no_grad():
+                    dummy_xyz = torch.zeros(5, 3, device=device)
+                    try:
+                        pre_features = model.triplane(dummy_xyz)
+                        logger.info(f"Pre-DDP TriPlane test output: {pre_features.shape}")
+                        expected_dim = 3 * model.triplane.dim
+                        if pre_features.shape[1] != expected_dim:
+                            logger.error(f"TriPlane already broken before DDP! Expected {expected_dim}, got {pre_features.shape[1]}")
+                    except Exception as e:
+                        logger.error(f"Pre-DDP TriPlane test failed: {e}")
+            
+            # Wrap in DDP with more conservative settings
+            model = DDP(
+                model, 
+                device_ids=[device], 
+                find_unused_parameters=False,  # More conservative
+                broadcast_buffers=True,
+                bucket_cap_mb=25,  # Smaller buckets to avoid parameter concatenation issues
+            )
+            
+            # CRITICAL: Verify triplane parameters after DDP wrapping
+            if hasattr(model, 'module') and hasattr(model.module, 'triplane'):
+                post_ddp_info = {}
+                post_ddp_info['triplane_xy'] = model.module.triplane.plane_xy.shape
+                post_ddp_info['triplane_xz'] = model.module.triplane.plane_xz.shape
+                post_ddp_info['triplane_yz'] = model.module.triplane.plane_yz.shape
+                post_ddp_info['triplane_dim'] = model.module.triplane.dim
+                logger.info(f"Post-DDP TriPlane parameters: {post_ddp_info}")
+                
+                # Check for parameter corruption
+                for key, pre_shape in pre_ddp_info.items():
+                    if key in post_ddp_info and post_ddp_info[key] != pre_shape:
+                        logger.error(f"DDP corrupted {key}! Pre: {pre_shape}, Post: {post_ddp_info[key]}")
+                        raise RuntimeError(f"DDP parameter corruption detected for {key}")
+                
+                # Test triplane forward pass after DDP
+                with torch.no_grad():
+                    dummy_xyz = torch.zeros(5, 3, device=device)
+                    try:
+                        post_features = model.module.triplane(dummy_xyz)
+                        logger.info(f"Post-DDP TriPlane test output: {post_features.shape}")
+                        expected_dim = 3 * model.module.triplane.dim
+                        if post_features.shape[1] != expected_dim:
+                            logger.error(f"DDP corrupted TriPlane output! Expected {expected_dim}, got {post_features.shape[1]}")
+                            raise RuntimeError(f"DDP output corruption: expected {expected_dim}, got {post_features.shape[1]}")
+                    except Exception as e:
+                        logger.error(f"Post-DDP TriPlane test failed: {e}")
+                        raise e
+            
+            logger.info(f"Model successfully converted to DDP on device {device}")
         except Exception as e:
             logger.error(f"Failed to convert model to DDP: {e}")
             logger.warning("Falling back to single-GPU mode")
