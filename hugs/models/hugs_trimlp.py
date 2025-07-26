@@ -72,6 +72,7 @@ class HUGS_TRIMLP:
         disable_posedirs=False,
         triplane_res=256,
         betas=None,
+        num_frames=0
     ):
         self.only_rgb = only_rgb
         self.active_sh_degree = 0
@@ -105,6 +106,14 @@ class HUGS_TRIMLP:
                                                   disable_posedirs=disable_posedirs).to('cuda')
         self.geometry_dec = GeometryDecoder(n_features=n_features*3, use_surface=use_surface).to('cuda')
         
+        if num_frames > 0:
+            film_emb_dim = 32  # dimension of the per-frame embedding (you can choose 16-32)
+            self.frame_emb = nn.Embedding(num_frames, film_emb_dim).to(self.device)
+            self.film_layer = nn.Linear(film_emb_dim, 2 * self.triplane.n_output_dims).to(self.device)
+            # Initialize FiLM layer weights so that initially gamma ~1 and beta ~0 (no effect):
+            nn.init.zeros_(self.film_layer.weight)
+            nn.init.zeros_(self.film_layer.bias)
+
         if n_subdivision > 0:
             logger.info(f"Subdividing SMPL model {n_subdivision} times")
             self.smpl_template = subdivide_smpl_model(smoothing=True, n_iter=n_subdivision).to(self.device)
@@ -204,6 +213,19 @@ class HUGS_TRIMLP:
 
     def canon_forward(self):
         tri_feats = self.triplane(self.get_xyz)
+        # After computing tri_feats from the TriPlane:
+        if hasattr(self, "frame_emb") and dataset_idx is not None and dataset_idx >= 0:
+            # Get the frame index (ensure it's an int or tensor on GPU)
+            idx = int(dataset_idx) if not torch.is_tensor(dataset_idx) else int(dataset_idx.item())
+            # Obtain the embedding for this frame:
+            cond = self.frame_emb(torch.tensor(idx, device=self.device))
+            # Get 2*N outputs from FiLM layer and split into gamma and beta:
+            gamma_beta = self.film_layer(cond)            # shape: [2*N]
+            feat_dim = tri_feats.shape[-1]               # N = tri_feats feature dim (e.g. 96)
+            gamma = gamma_beta[:feat_dim].view(1, -1)    # shape [1, N]
+            beta  = gamma_beta[feat_dim:].view(1, -1)    # shape [1, N]
+            # Apply FiLM: scale features by (1 + gamma) and add beta
+            tri_feats = tri_feats * (1 + gamma) + beta
         appearance_out = self.appearance_dec(tri_feats)
         geometry_out = self.geometry_dec(tri_feats)
         
@@ -406,6 +428,20 @@ class HUGS_TRIMLP:
     ):
         
         tri_feats = self.triplane(self.get_xyz)
+        # After computing tri_feats from the TriPlane:
+        if hasattr(self, "frame_emb") and dataset_idx is not None and dataset_idx >= 0:
+            # Get the frame index (ensure it's an int or tensor on GPU)
+            idx = int(dataset_idx) if not torch.is_tensor(dataset_idx) else int(dataset_idx.item())
+            # Obtain the embedding for this frame:
+            cond = self.frame_emb(torch.tensor(idx, device=self.device))
+            # Get 2*N outputs from FiLM layer and split into gamma and beta:
+            gamma_beta = self.film_layer(cond)            # shape: [2*N]
+            feat_dim = tri_feats.shape[-1]               # N = tri_feats feature dim (e.g. 96)
+            gamma = gamma_beta[:feat_dim].view(1, -1)    # shape [1, N]
+            beta  = gamma_beta[feat_dim:].view(1, -1)    # shape [1, N]
+            # Apply FiLM: scale features by (1 + gamma) and add beta
+            tri_feats = tri_feats * (1 + gamma) + beta
+
         appearance_out = self.appearance_dec(tri_feats)
         geometry_out = self.geometry_dec(tri_feats)
         
@@ -676,6 +712,8 @@ class HUGS_TRIMLP:
             {'params': self.geometry_dec.parameters(), 'lr': cfg.geometry, 'name': 'geometry_dec'},
             {'params': self.appearance_dec.parameters(), 'lr': cfg.appearance, 'name': 'appearance_dec'},
             {'params': self.deformation_dec.parameters(), 'lr': cfg.deformation, 'name': 'deform_dec'},
+            {'params': self.film_layer.parameters(), 'lr': cfg.film_layer, 'name': 'film_layer'},
+            {'params': self.frame_emb.parameters(), 'lr': cfg.frame_emb, 'name': 'frame_emb'},
         ]
         
         if hasattr(self, 'global_orient') and self.global_orient.requires_grad:
