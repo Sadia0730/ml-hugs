@@ -17,7 +17,7 @@ cfg.detect_anomaly = False
 cfg.debug = False
 cfg.wandb = False
 cfg.logdir = ''
-cfg.logdir_ckpt = ''
+cfg.logdir_ckpt = 'output_Film_per_pose_citron'
 cfg.eval = False
 cfg.bg_color = 'white'
 

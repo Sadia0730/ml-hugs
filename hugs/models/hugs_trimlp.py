@@ -213,19 +213,6 @@ class HUGS_TRIMLP:
 
     def canon_forward(self):
         tri_feats = self.triplane(self.get_xyz)
-        # After computing tri_feats from the TriPlane:
-        if hasattr(self, "frame_emb") and dataset_idx is not None and dataset_idx >= 0:
-            # Get the frame index (ensure it's an int or tensor on GPU)
-            idx = int(dataset_idx) if not torch.is_tensor(dataset_idx) else int(dataset_idx.item())
-            # Obtain the embedding for this frame:
-            cond = self.frame_emb(torch.tensor(idx, device=self.device))
-            # Get 2*N outputs from FiLM layer and split into gamma and beta:
-            gamma_beta = self.film_layer(cond)            # shape: [2*N]
-            feat_dim = tri_feats.shape[-1]               # N = tri_feats feature dim (e.g. 96)
-            gamma = gamma_beta[:feat_dim].view(1, -1)    # shape [1, N]
-            beta  = gamma_beta[feat_dim:].view(1, -1)    # shape [1, N]
-            # Apply FiLM: scale features by (1 + gamma) and add beta
-            tri_feats = tri_feats * (1 + gamma) + beta
         appearance_out = self.appearance_dec(tri_feats)
         geometry_out = self.geometry_dec(tri_feats)
         
@@ -731,6 +718,7 @@ class HUGS_TRIMLP:
         self.non_densify_params_keys = [
             'global_orient', 'body_pose', 'betas', 'transl', 
             'v_embed', 'geometry_dec', 'appearance_dec', 'deform_dec',
+            'film_layer', 'frame_emb'
         ]
         
         for param in params:
@@ -806,6 +794,12 @@ class HUGS_TRIMLP:
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
+        print("=== Optimizer param groups ===")
+        for group in self.optimizer.param_groups:
+            print("  name:", group.get("name", None))
+            print("  params:", [type(p) for p in group["params"]], "len:", len(group["params"]))
+        print("tensors_dict keys:", tensors_dict.keys())
+
         for group in self.optimizer.param_groups:
             if group["name"] in self.non_densify_params_keys:
                 continue

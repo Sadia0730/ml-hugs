@@ -111,7 +111,7 @@ class GaussianTrainer():
                     disable_posedirs=cfg.human.disable_posedirs,
                     triplane_res=cfg.human.triplane_res,
                     betas=init_betas[0],
-                    num_frames=cfg.human.num_frames,
+                    num_frames=len(self.train_dataset)if hasattr(self, 'train_dataset') else len(self.val_dataset),
                 )
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
                 if not cfg.eval:
