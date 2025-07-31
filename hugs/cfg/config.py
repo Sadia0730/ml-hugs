@@ -95,6 +95,8 @@ cfg.human.lr.vembed = 1e-3
 cfg.human.lr.deformation = 1e-4
 cfg.human.lr.film_layer = 0.001
 cfg.human.lr.frame_emb = 0.001
+cfg.human.lr.gnn = 0.001
+cfg.human.lr.deform_grid = 0.001
 # scale
 cfg.human.lr.scale_lr_w_npoints = False
 

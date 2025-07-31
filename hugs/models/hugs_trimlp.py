@@ -105,7 +105,15 @@ class HUGS_TRIMLP:
         self.deformation_dec = DeformationDecoder(n_features=n_features*3, 
                                                   disable_posedirs=disable_posedirs).to('cuda')
         self.geometry_dec = GeometryDecoder(n_features=n_features*3, use_surface=use_surface).to('cuda')
-        
+
+        self.use_graph = True  # (or config-driven)
+        feature_dim = self.triplane.n_output_dims  # Or however triplane features are sized
+        self.gnn_linear = nn.Linear(feature_dim * 2, feature_dim).to(self.device)
+        self.use_deformation_grid = True  # (or from config)
+        if self.use_deformation_grid:
+            grid_res = 32  # (or from config)
+            self.deform_grid = nn.Parameter(torch.zeros(1, 3, grid_res, grid_res, grid_res).to(self.device))
+
         if num_frames > 0:
             film_emb_dim = 32  # dimension of the per-frame embedding (you can choose 16-32)
             self.frame_emb = nn.Embedding(num_frames, film_emb_dim).to(self.device)
@@ -173,6 +181,15 @@ class HUGS_TRIMLP:
             'optimizer': self.optimizer.state_dict(),
             'spatial_lr_scale': self.spatial_lr_scale,
         }
+        if hasattr(self, 'deform_grid') and self.deform_grid is not None:
+            save_dict['deform_grid'] = self.deform_grid
+        if hasattr(self, 'frame_emb'):
+            save_dict['frame_emb'] = self.frame_emb.state_dict()
+        if hasattr(self, 'film_layer'):
+            save_dict['film_layer'] = self.film_layer.state_dict()
+        if hasattr(self, 'gnn_linear'):
+            save_dict['gnn_linear'] = self.gnn_linear.state_dict()
+       
         return save_dict
     
     def load_state_dict(self, state_dict, cfg=None):
@@ -189,7 +206,18 @@ class HUGS_TRIMLP:
         self.geometry_dec.load_state_dict(state_dict['geometry_dec'])
         self.deformation_dec.load_state_dict(state_dict['deformation_dec'])
         self.scaling_multiplier = state_dict['scaling_multiplier']
-        
+        # ---- Optional: Deformation Grid ----
+        if 'deform_grid' in state_dict and hasattr(self, 'deform_grid'):
+            self.deform_grid.data.copy_(state_dict['deform_grid'])
+        # ---- Optional: FiLM embedding ----
+        if 'frame_emb' in state_dict and hasattr(self, 'frame_emb'):
+            self.frame_emb.load_state_dict(state_dict['frame_emb'])
+        if 'film_layer' in state_dict and hasattr(self, 'film_layer'):
+            self.film_layer.load_state_dict(state_dict['film_layer'])
+        # ---- Optional: GNN ----
+        if 'gnn_linear' in state_dict and hasattr(self, 'gnn_linear'):
+            self.gnn_linear.load_state_dict(state_dict['gnn_linear'])
+
         if cfg is None:
             from hugs.cfg.config import cfg as default_cfg
             cfg = default_cfg.human.lr
@@ -415,6 +443,16 @@ class HUGS_TRIMLP:
     ):
         
         tri_feats = self.triplane(self.get_xyz)
+        if self.use_graph:
+            N, tri_feat_dim = tri_feats.shape
+            neighbor_sum = torch.zeros_like(tri_feats)
+            i_idx = self.edges[:, 0]
+            j_idx = self.edges[:, 1]
+            neighbor_sum.index_add_(0, j_idx, tri_feats[i_idx])
+            neighbor_count = torch.zeros(N, device=tri_feats.device).index_add_(0, j_idx, torch.ones_like(j_idx, dtype=torch.float))
+            neighbor_avg = neighbor_sum / neighbor_count.unsqueeze(1).clamp(min=1)
+            combined = torch.cat([tri_feats, neighbor_avg], dim=1)  # (N, 2tri_feat_dim)
+            tri_feats = F.relu(self.gnn_linear(combined))
         # After computing tri_feats from the TriPlane:
         if hasattr(self, "frame_emb") and dataset_idx is not None and dataset_idx >= 0:
             # Get the frame index (ensure it's an int or tensor on GPU)
@@ -431,8 +469,22 @@ class HUGS_TRIMLP:
 
         appearance_out = self.appearance_dec(tri_feats)
         geometry_out = self.geometry_dec(tri_feats)
-        
+        # --- Deformation Grid sampling ---
+        grid_offsets = 0
+        if self.use_deformation_grid:
+            pts = self.get_xyz.detach()
+            min_val, max_val = -1.5, 1.5  # or dataset specific range
+            normed_pts = (pts - min_val) / (max_val - min_val) * 2 - 1  # now in [-1,1]
+            coords = normed_pts.view(1, 1, 1, -1, 3)
+            sampled = F.grid_sample(self.deform_grid, coords, mode='bilinear', align_corners=True)
+            sampled = sampled.view(3, -1).T  # (N,3)
+            grid_offsets = sampled
+
         xyz_offsets = geometry_out['xyz']
+        if self.use_deformation_grid:
+            xyz_offsets = xyz_offsets + grid_offsets
+
+     
         gs_rot6d = geometry_out['rotations']
         gs_scales = geometry_out['scales'] * self.scaling_multiplier
         
@@ -702,7 +754,11 @@ class HUGS_TRIMLP:
             {'params': self.film_layer.parameters(), 'lr': cfg.film_layer, 'name': 'film_layer'},
             {'params': self.frame_emb.parameters(), 'lr': cfg.frame_emb, 'name': 'frame_emb'},
         ]
-        
+        if hasattr(self, 'gnn_linear'):
+            params.append({'params': self.gnn_linear.parameters(), 'lr': cfg.gnn, 'name': 'gnn_linear'})
+        if hasattr(self, 'deform_grid'):
+            params.append({'params': [self.deform_grid], 'lr': cfg.deform_grid, 'name': 'deform_grid'})
+
         if hasattr(self, 'global_orient') and self.global_orient.requires_grad:
             params.append({'params': self.global_orient, 'lr': cfg.smpl_pose, 'name': 'global_orient'})
         
@@ -718,7 +774,7 @@ class HUGS_TRIMLP:
         self.non_densify_params_keys = [
             'global_orient', 'body_pose', 'betas', 'transl', 
             'v_embed', 'geometry_dec', 'appearance_dec', 'deform_dec',
-            'film_layer', 'frame_emb'
+            'film_layer', 'frame_emb', 'gnn_linear', 'deform_grid'
         ]
         
         for param in params:
