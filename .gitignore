@@ -16,3 +16,5 @@ screenshots
 *.pth
 *.zip
 output*
+*.png
+*.txt

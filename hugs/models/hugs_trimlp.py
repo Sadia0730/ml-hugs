@@ -135,6 +135,8 @@ class HUGS_TRIMLP:
             faces=self.smpl_template.faces, process=False
         ).edges_unique
         self.edges = torch.from_numpy(edges).to(self.device).long()
+        print("edges:", self.edges.shape, self.edges.min().item(), self.edges.max().item())
+
         
         self.init_values = {}
         self.get_vitruvian_verts()
@@ -443,6 +445,9 @@ class HUGS_TRIMLP:
     ):
         
         tri_feats = self.triplane(self.get_xyz)
+        # print("edges:", self.edges.shape, self.edges.min().item(), self.edges.max().item())
+        print("tri_feats (before GNN) mean/std: ", tri_feats.mean().item(), tri_feats.std().item())
+
         if self.use_graph:
             N, tri_feat_dim = tri_feats.shape
             neighbor_sum = torch.zeros_like(tri_feats)
@@ -453,6 +458,13 @@ class HUGS_TRIMLP:
             neighbor_avg = neighbor_sum / neighbor_count.unsqueeze(1).clamp(min=1)
             combined = torch.cat([tri_feats, neighbor_avg], dim=1)  # (N, 2tri_feat_dim)
             tri_feats = F.relu(self.gnn_linear(combined))
+            print("tri_feats (after GNN) mean/std : ", tri_feats.mean().item(), tri_feats.std().item())
+
+        # import matplotlib.pyplot as plt
+        # plt.hist(self.gnn_linear.weight.detach().cpu().numpy().flatten())
+        # plt.title("GNN Linear Weight Histogram")
+        # plt.show()
+
         # After computing tri_feats from the TriPlane:
         if hasattr(self, "frame_emb") and dataset_idx is not None and dataset_idx >= 0:
             # Get the frame index (ensure it's an int or tensor on GPU)

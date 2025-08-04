@@ -286,7 +286,26 @@ class GaussianTrainer():
             )
             
             loss.backward()
-            
+
+            with torch.no_grad():
+                print("gnn_linear weight norm:", self.human_gs.gnn_linear.weight.norm().item())
+                if hasattr(self.human_gs, "film_layer"):
+                    print("film_layer weight norm:", self.human_gs.film_layer.weight.norm().item())
+                if hasattr(self.human_gs, "deform_grid"):
+                    print("deform_grid std:", self.human_gs.deform_grid.std().item())
+
+            print("gnn_linear weight grad mean abs:", self.human_gs.gnn_linear.weight.grad.abs().mean().item())
+            print("gnn_linear bias grad mean abs:", self.human_gs.gnn_linear.bias.grad.abs().mean().item())
+            if hasattr(self.human_gs, "film_layer"):
+                print("film_layer grad:", self.human_gs.film_layer.weight.grad.abs().mean().item())
+            if hasattr(self.human_gs, "deform_grid"):
+                print("deform_grid grad:", self.human_gs.deform_grid.grad.abs().mean().item())
+            if t_iter % 1000 == 0:
+                import matplotlib.pyplot as plt
+                plt.hist(self.human_gs.gnn_linear.weight.detach().cpu().numpy().flatten())
+                plt.title("GNN Linear Weight Histogram")
+                plt.savefig(f"gnn_weight_hist_{t_iter}.png")
+                plt.close()
             loss_dict['loss'] = loss
             
             if t_iter % 10 == 0:
