@@ -513,7 +513,9 @@ class HUGS_TRIMLP(nn.Module):
         else:
             lbs_weights = None
             posedirs = None
-        
+        # print("Dataset Index:", dataset_idx)
+        # print("Global Orientation:", global_orient)
+        # print("Body Pose:", body_pose)
         if hasattr(self, 'global_orient') and global_orient is None:
             global_orient = rotation_6d_to_axis_angle(
                 self.global_orient[dataset_idx].reshape(-1, 6)).reshape(3)
