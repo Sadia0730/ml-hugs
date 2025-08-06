@@ -73,12 +73,19 @@ def main(cfg):
     # get trainer
     trainer = GaussianTrainer(cfg)
  
-    trainer.validate()
+    # Check if test evaluation is requested
+    if '--test' in extras:
+        logger.info("Running test evaluation...")
+        trainer.validate_test()
+        mode = 'test'
+    else:
+        logger.info("Running validation evaluation...")
+        trainer.validate()
+        mode = 'eval' if cfg.eval else 'train'
                 
     # run animation
     trainer.animate()
     
-    mode = 'eval' if cfg.eval else 'train'
     with open(os.path.join(cfg.logdir, f'results_{mode}.json'), 'w') as f:
         json.dump(trainer.eval_metrics, f, indent=4)
 

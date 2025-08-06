@@ -16,3 +16,5 @@ screenshots
 logs/
 output
 *mp4
+*.png
+*.txt

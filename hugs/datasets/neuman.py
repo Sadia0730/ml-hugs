@@ -304,6 +304,8 @@ class NeumanDataset(torch.utils.data.Dataset):
             return len(self.train_split)
         elif self.split == "val":
             return len(self.val_split)
+        elif self.split == "test":
+            return len(self.test_split)
         elif self.split == "anim":
             return self.num_frames
     
@@ -313,13 +315,15 @@ class NeumanDataset(torch.utils.data.Dataset):
             idx = self.train_split[i]
         elif self.split == "val":
             idx = self.val_split[i]
+        elif self.split == "test":
+            idx = self.test_split[i]
         elif self.split == "anim":
             idx = i
         
         cap = self.scene.captures[idx]
         
         datum = {}
-        if self.split in ['train', 'val']:
+        if self.split in ['train', 'val', 'test']:
             img = cap.captured_image.image # cv2.imread(self.img_lists[idx])
             
             msk = cv2.imread(self.msk_lists[idx], cv2.IMREAD_GRAYSCALE) / 255

@@ -56,6 +56,13 @@ def get_val_dataset(cfg):
    
     return dataset
 
+def get_test_dataset(cfg):
+    if cfg.dataset.name == 'neuman':
+        logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-test')
+        dataset = NeumanDataset(cfg.dataset.seq, 'test', cfg.mode)
+   
+    return dataset
+
 
 def get_anim_dataset(cfg):
     if cfg.dataset.name == 'neuman':
@@ -75,6 +82,7 @@ class GaussianTrainer():
         if not cfg.eval:
             self.train_dataset = get_train_dataset(cfg)
         self.val_dataset = get_val_dataset(cfg)
+        self.test_dataset = get_test_dataset(cfg)
         self.anim_dataset = get_anim_dataset(cfg)
         
         self.eval_metrics = {}
@@ -464,6 +472,14 @@ class GaussianTrainer():
     
     @torch.no_grad()
     def validate(self, iter=None):
+        self._validate(self.val_dataset, iter, 'val')
+    
+    @torch.no_grad()
+    def validate_test(self, iter=None):
+        self._validate(self.test_dataset, iter, 'test')
+    
+    @torch.no_grad()
+    def _validate(self, dataset, iter=None, split_name='val'):
         
         iter_s = 'final' if iter is None else f'{iter:06d}'
         
@@ -477,7 +493,7 @@ class GaussianTrainer():
         metrics = dict.fromkeys(['_'.join(x) for x in itertools.product(methods, metrics)])
         metrics = {k: [] for k in metrics}
         
-        for idx, data in enumerate(tqdm(self.val_dataset, desc="Validation")):
+        for idx, data in enumerate(tqdm(dataset, desc=f"{split_name.capitalize()} Validation")):
             human_gs_out, scene_gs_out = None, None
             render_mode = self.cfg.mode
             
@@ -522,7 +538,7 @@ class GaussianTrainer():
             metrics['hugs_lpips'].append(self.lpips(image.clip(max=1), gt_image).mean().double())
             
             log_img = torchvision.utils.make_grid([gt_image, image], nrow=2, pad_value=1)
-            imf = f'{self.cfg.logdir}/val/full_{iter_s}_{idx:03d}.png'
+            imf = f'{self.cfg.logdir}/{split_name}/full_{iter_s}_{idx:03d}.png'
             os.makedirs(os.path.dirname(imf), exist_ok=True)
             torchvision.utils.save_image(log_img, imf)
             
@@ -539,7 +555,7 @@ class GaussianTrainer():
             
             if len(log_img) > 0:
                 log_img = torchvision.utils.make_grid(log_img, nrow=len(log_img), pad_value=1)
-                torchvision.utils.save_image(log_img, f'{self.cfg.logdir}/val/human_{iter_s}_{idx:03d}.png')
+                torchvision.utils.save_image(log_img, f'{self.cfg.logdir}/{split_name}/human_{iter_s}_{idx:03d}.png')
         
         
         self.eval_metrics[iter_s] = {}

@@ -122,8 +122,26 @@ def train_worker(rank, world_size, cfg, devices):
         # Create trainer
         trainer = GaussianTrainer(cfg)
         
-        # Train
-        trainer.train()
+        # Train and save checkpoint only if not in eval mode
+        if not cfg.eval:
+            trainer.train()
+            trainer.save_ckpt()
+        
+        # Run evaluation
+        trainer.validate()
+        
+        # Save results.json and run animation only on main process
+        if rank == 0:
+            # Save results.json
+            mode = 'eval' if cfg.eval else 'train'
+            with open(os.path.join(cfg.logdir, f'results_{mode}.json'), 'w') as f:
+                json.dump(trainer.eval_metrics, f, indent=4)
+                
+            # Run animation
+            if cfg.mode in ['human', 'human_scene']:
+                trainer.animate()
+                trainer.render_canonical(pose_type='a_pose')
+                trainer.render_canonical(pose_type='da_pose')
         
         # Cleanup
         if world_size > 1:

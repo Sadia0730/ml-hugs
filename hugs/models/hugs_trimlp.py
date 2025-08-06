@@ -174,6 +174,7 @@ class HUGS_TRIMLP(nn.Module):
             'appearance_dec': self.appearance_dec.state_dict(),
             'geometry_dec': self.geometry_dec.state_dict(),
             'deformation_dec': self.deformation_dec.state_dict(),
+            'nonrigid_deformer': self.nonrigid_deformer.state_dict(),
             'scaling_multiplier': self.scaling_multiplier,
             'max_radii2D': self.max_radii2D,
             'xyz_gradient_accum': self.xyz_gradient_accum,
@@ -196,6 +197,15 @@ class HUGS_TRIMLP(nn.Module):
         self.appearance_dec.load_state_dict(state_dict['appearance_dec'])
         self.geometry_dec.load_state_dict(state_dict['geometry_dec'])
         self.deformation_dec.load_state_dict(state_dict['deformation_dec'])
+        if 'nonrigid_deformer' in state_dict:
+            self.nonrigid_deformer.load_state_dict(state_dict['nonrigid_deformer'])
+        else:
+            # Handle backward compatibility - initialize nonrigid_deformer if not in checkpoint
+            logger.warning("nonrigid_deformer not found in checkpoint, initializing with default values")
+            if hasattr(self, 'nonrigid_deformer'):
+                # Initialize with zeros or default values
+                for param in self.nonrigid_deformer.parameters():
+                    param.data.zero_()
         self.scaling_multiplier = state_dict['scaling_multiplier']
         
         if cfg is None:
