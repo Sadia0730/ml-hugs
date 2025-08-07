@@ -124,6 +124,9 @@ class GaussianTrainer():
                 if not cfg.eval:
                     self.human_gs.initialize()
                     self.human_gs = optimize_init(self.human_gs, num_steps=7000)
+                elif cfg.human.use_deformer:
+                    # Initialize for eval mode when using deformer
+                    self.human_gs.initialize()
         
         if cfg.mode in ['scene', 'human_scene']:
             self.scene_gs = SceneGS(

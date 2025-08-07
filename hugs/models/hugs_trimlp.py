@@ -772,6 +772,10 @@ class HUGS_TRIMLP(nn.Module):
             {'params': self.deformation_dec.parameters(), 'lr': cfg.deformation, 'name': 'deform_dec'},
         ]
         
+        # Add nonrigid_deformer parameters if it exists
+        if hasattr(self, 'nonrigid_deformer'):
+            params.append({'params': self.nonrigid_deformer.parameters(), 'lr': cfg.deformation, 'name': 'nonrigid_deformer'})
+        
         if hasattr(self, 'global_orient') and self.global_orient.requires_grad:
             params.append({'params': self.global_orient, 'lr': cfg.smpl_pose, 'name': 'global_orient'})
         
@@ -786,7 +790,7 @@ class HUGS_TRIMLP(nn.Module):
         
         self.non_densify_params_keys = [
             'global_orient', 'body_pose', 'betas', 'transl', 
-            'v_embed', 'geometry_dec', 'appearance_dec', 'deform_dec',
+            'v_embed', 'geometry_dec', 'appearance_dec', 'deform_dec', 'nonrigid_deformer',
         ]
         
         for param in params:

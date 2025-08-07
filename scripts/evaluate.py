@@ -93,6 +93,7 @@ def main(cfg):
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-o", "--output_dir", default=None, help="path to the output directory")
+    parser.add_argument("--checkpoint", default=None, help="specific checkpoint file to load")
     
     args, extras = parser.parse_known_args()
         

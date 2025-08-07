@@ -8,9 +8,13 @@ debug: false
 wandb: false
 eval: false
 bg_color: white
+# Training resume settings
+resume: false  # Set to true to resume training
+resume_iter: 0  # Starting iteration (0 = start from beginning)
+resume_ckpt: null  # Specific checkpoint to resume from (null = auto-detect latest)
 dataset:
   name: neuman
-  seq: ["citron", "seattle", "bike", "lab", "jogging", "parkinglot"]
+  seq: "citron"
 train:
   batch_size: 4
   num_workers: 4
