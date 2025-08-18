@@ -14,12 +14,12 @@ dataset:
 train:
   batch_size: 4
   num_workers: 4
-  num_steps: 2000  # Reduced to 2000 for quick testing
-  save_ckpt_interval: 500
-  val_interval: 500
-  anim_interval: 2000
+  num_steps: 14998  # Reduced to 2000 for quick testing
+  save_ckpt_interval: 2000 #500
+  val_interval: 1000 #500
+  anim_interval: 15000 #2000
   optim_scene: true
-  save_progress_images: true
+  save_progress_images: false
   progress_save_interval: 100
 human:
   name: hugs_trimlp
@@ -84,10 +84,10 @@ human:
     num_patches: 8
     patch_size: 256
     use_patches: 1
-  densification_interval: 400
+  densification_interval: 600 #400
   opacity_reset_interval: 3000
-  densify_from_iter: 100
-  densify_until_iter: 1800
+  densify_from_iter: 3000 #100
+  densify_until_iter: 15000 #1800
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   densify_extent: 1.0
