@@ -8,33 +8,29 @@ debug: false
 wandb: false
 eval: false
 bg_color: white
-# Training resume settings
-resume: false  # Set to true to resume training
-resume_iter: 0  # Starting iteration (0 = start from beginning)
-resume_ckpt: null  # Specific checkpoint to resume from (null = auto-detect latest)
 dataset:
   name: neuman
   seq: "citron"
 train:
   batch_size: 4
   num_workers: 4
-  num_steps: 14998
-  save_ckpt_interval: 2000
-  val_interval: 1000
-  anim_interval: 15000
+  num_steps: 2000  # Reduced to 2000 for quick testing
+  save_ckpt_interval: 500
+  val_interval: 500
+  anim_interval: 2000
   optim_scene: true
-  save_progress_images: false
-  progress_save_interval: 10
+  save_progress_images: true
+  progress_save_interval: 100
 human:
   name: hugs_trimlp
   ckpt: null
-  sh_degree: 0
+  sh_degree: 2
   n_subdivision: 2
   only_rgb: false
   use_surface: false
   use_deformer: true
   init_2d: false
-  disable_posedirs: true
+  disable_posedirs: false
   res_offset: false
   rotate_sh: false
   isotropic: false
@@ -50,6 +46,9 @@ human:
   canon_nframes: 60
   canon_pose_type: da_pose
   knn_n_hops: 3
+  # Ablation flags for FiLM and nonrigid deformation
+  use_film: true      # Set to false to disable FiLM
+  use_nonrigid: true  # Set to false to disable nonrigid deformation
   lr:
     wd: 0.0
     position: 0.00016
@@ -80,15 +79,15 @@ human:
     lpips_w: 1.0
     nonrigid_w: 0.01
     nonrigid_smooth_w: 0.001
-    lbs_w: 1000.0
+    lbs_w: 500.0
     humansep_w: 0.0
     num_patches: 8
     patch_size: 256
     use_patches: 1
-  densification_interval: 600
+  densification_interval: 400
   opacity_reset_interval: 3000
-  densify_from_iter: 3000
-  densify_until_iter: 15000
+  densify_from_iter: 100
+  densify_until_iter: 1800
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   densify_extent: 1.0

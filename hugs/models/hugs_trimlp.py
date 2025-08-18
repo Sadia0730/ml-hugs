@@ -74,6 +74,9 @@ class HUGS_TRIMLP(nn.Module):
         disable_posedirs=False,
         triplane_res=256,
         betas=None,
+        num_frames=0,
+        use_film=True,  # New ablation flag for FiLM
+        use_nonrigid=True,  # New ablation flag for nonrigid deformation
     ):
         super(HUGS_TRIMLP, self).__init__()
         
@@ -88,6 +91,10 @@ class HUGS_TRIMLP(nn.Module):
         self.init_scale_multiplier = init_scale_multiplier
         self.use_deformer = use_deformer
         self.disable_posedirs = disable_posedirs
+        
+        # Ablation flags
+        self.use_film = use_film
+        self.use_nonrigid = use_nonrigid
         
         if n_subdivision > 0:
             logger.info(f"Subdividing SMPL model {n_subdivision} times")
@@ -117,22 +124,37 @@ class HUGS_TRIMLP(nn.Module):
         self.deformation_dec = DeformationDecoder(n_features=n_features*3, 
                                                   disable_posedirs=disable_posedirs).to('cuda')
         self.geometry_dec = GeometryDecoder(n_features=n_features*3, use_surface=use_surface).to('cuda')
-        # Dynamically determine pose_dim and triplane_dim
-        # Use a dummy forward to get tri_feats shape
+        
+        # Get triplane feature dimension
         dummy_xyz = torch.zeros(1, 3, device='cuda')
         dummy_tri_feats = self.triplane(dummy_xyz)
-        triplane_dim = dummy_tri_feats.shape[1]
-        # Use body_pose shape for pose_dim
-        if hasattr(self, 'body_pose') and self.body_pose is not None:
-            pose_dim = self.body_pose.shape[1]
-        else:
-            pose_dim = 138  # fallback to 23*6
-        xyz_dim = 3
-        self.nonrigid_deformer = NonRigidDeformer(
-            input_dim=pose_dim + xyz_dim, 
-            triplane_dim=triplane_dim, 
-            act='gelu'
-        ).to('cuda')
+        self.triplane_dim = dummy_tri_feats.shape[1]
+        
+        # Frame-based FiLM approach: frame embedding + FiLM layer
+        if num_frames > 0 and self.use_film:
+            film_emb_dim = 32  # dimension of the per-frame embedding
+            self.frame_emb = nn.Embedding(num_frames, film_emb_dim).to(self.device)
+            self.film_layer = nn.Linear(film_emb_dim, 2 * self.triplane_dim).to(self.device)
+            # Initialize FiLM layer weights so that initially gamma ~0 and beta ~0 (no effect):
+            nn.init.zeros_(self.film_layer.weight)
+            nn.init.zeros_(self.film_layer.bias)
+            logger.info(f"Initialized FiLM with {num_frames} frames, embedding dim {film_emb_dim}")
+        
+        # Nonrigid deformer (only if enabled)
+        if self.use_nonrigid:
+            if hasattr(self, 'body_pose') and self.body_pose is not None:
+                pose_dim = self.body_pose.shape[1]
+            else:
+                pose_dim = 138  # fallback to 23*6
+            xyz_dim = 3
+            self.nonrigid_deformer = NonRigidDeformer(
+                input_dim=pose_dim + xyz_dim, 
+                triplane_dim=self.triplane_dim, 
+                hidden_dim=128,  # Reduced for speed
+                act='gelu',
+                use_smoothness=True  # Can be set to False for maximum speed
+            ).to('cuda')
+            logger.info(f"Initialized NonRigidDeformer with input_dim={pose_dim + xyz_dim}, triplane_dim={self.triplane_dim}")
         
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -140,6 +162,16 @@ class HUGS_TRIMLP(nn.Module):
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        
+        # FiLM parameter tracking for visualization
+        self.film_stats = {
+            'gamma_mean': [],
+            'gamma_std': [],
+            'beta_mean': [],
+            'beta_std': [],
+            'gamma_norm': [],
+            'beta_norm': []
+        }
     
     def create_body_pose(self, body_pose, requires_grad=False):
         body_pose = axis_angle_to_rotation_6d(body_pose.reshape(-1, 3)).reshape(-1, 23*6)
@@ -182,6 +214,17 @@ class HUGS_TRIMLP(nn.Module):
             'optimizer': self.optimizer.state_dict(),
             'spatial_lr_scale': self.spatial_lr_scale,
         }
+        
+        # Add FiLM parameters only if enabled
+        if self.use_film and hasattr(self, 'frame_emb'):
+            save_dict['frame_emb'] = self.frame_emb.state_dict()
+        if self.use_film and hasattr(self, 'film_layer'):
+            save_dict['film_layer'] = self.film_layer.state_dict()
+        
+        # Add ablation flags
+        save_dict['use_film'] = self.use_film
+        save_dict['use_nonrigid'] = self.use_nonrigid
+            
         return save_dict
     
     def load_state_dict(self, state_dict, cfg=None):
@@ -206,6 +249,19 @@ class HUGS_TRIMLP(nn.Module):
                 # Initialize with zeros or default values
                 for param in self.nonrigid_deformer.parameters():
                     param.data.zero_()
+        
+        # Load FiLM parameters if they exist in checkpoint and FiLM is enabled
+        if self.use_film and 'frame_emb' in state_dict and hasattr(self, 'frame_emb'):
+            self.frame_emb.load_state_dict(state_dict['frame_emb'])
+        if self.use_film and 'film_layer' in state_dict and hasattr(self, 'film_layer'):
+            self.film_layer.load_state_dict(state_dict['film_layer'])
+        
+        # Load ablation flags if they exist
+        if 'use_film' in state_dict:
+            self.use_film = state_dict['use_film']
+        if 'use_nonrigid' in state_dict:
+            self.use_nonrigid = state_dict['use_nonrigid']
+            
         self.scaling_multiplier = state_dict['scaling_multiplier']
         
         if cfg is None:
@@ -286,22 +342,30 @@ class HUGS_TRIMLP(nn.Module):
             canon_normals = compute_pointcloud_normals(gs_xyz.detach(), k=20)  # (N, 3)
 
         # ============ Apply Non-Rigid Deformation ============
-        if hasattr(self, 'body_pose') and self.body_pose is not None:
-            posevec = self.body_pose[dataset_idx].reshape(-1)  # (72,)
-        else:
-            posevec = body_pose.reshape(-1)
+        if self.use_nonrigid and hasattr(self, 'nonrigid_deformer'):
+            if hasattr(self, 'body_pose') and self.body_pose is not None:
+                posevec = self.body_pose[dataset_idx].reshape(-1)  # (pose_dim,)
+            else:
+                posevec = body_pose.reshape(-1)
 
-        tri_feats = self.triplane(self.get_xyz)
-        pose_dim = posevec.shape[0]
-        nonrigid_input = torch.cat([
-            posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, pose_dim)
-            gs_xyz,  # (N, 3)
-            tri_feats  # (N, triplane_dim)
-        ], dim=-1)
-        nonrigid_delta = self.nonrigid_deformer(nonrigid_input)
-        self.loss_nonrigid_reg = torch.mean((nonrigid_delta - gs_xyz) ** 2)
-        self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(nonrigid_delta, gs_xyz)
-        gs_xyz = nonrigid_delta
+            tri_feats = self.triplane(self.get_xyz)
+            # tri_feats already includes FiLM if enabled above
+            gs_xyz_deformed, delta = self.nonrigid_deformer.forward_from_parts(
+                posevec, gs_xyz, tri_feats
+            )
+
+            # losses
+            self.loss_nonrigid_reg    = torch.mean((gs_xyz_deformed - gs_xyz) ** 2)
+            self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(delta)
+            self.loss_nonrigid_delta  = (delta ** 2).sum(dim=-1).mean()
+
+            # use deformed xyz downstream
+            gs_xyz = gs_xyz_deformed
+        else:
+            delta = torch.zeros_like(gs_xyz)  # for logging consistency
+            self.loss_nonrigid_reg    = torch.tensor(0.0, device=self.device)
+            self.loss_nonrigid_smooth = torch.tensor(0.0, device=self.device)
+            self.loss_nonrigid_delta  = torch.tensor(0.0, device=self.device)
         # ======================================================
 
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
@@ -440,7 +504,7 @@ class HUGS_TRIMLP(nn.Module):
             'posedirs': posedirs,
             'gt_lbs_weights': gt_lbs_weights,
             'canon_normals': canon_normals,
-            'nonrigid_delta': nonrigid_delta,
+            'nonrigid_delta': delta,
         }
          
     def forward(
@@ -456,6 +520,35 @@ class HUGS_TRIMLP(nn.Module):
     ):
         
         tri_feats = self.triplane(self.get_xyz)
+        
+        # Apply FiLM modulation for frame-specific conditioning
+        if self.use_film and hasattr(self, "frame_emb") and dataset_idx is not None and dataset_idx >= 0:
+            # Get the frame index (ensure it's an int or tensor on GPU)
+            idx = int(dataset_idx) if not torch.is_tensor(dataset_idx) else int(dataset_idx.item())
+            # Obtain the embedding for this frame with safe index bounds:
+            num_emb = int(self.frame_emb.num_embeddings)
+            if idx < 0 or idx >= num_emb:
+                idx = int(idx % num_emb)
+            cond = self.frame_emb(torch.tensor(idx, device=self.device))
+            # Get 2*N outputs from FiLM layer and split into gamma and beta:
+            gamma_beta = self.film_layer(cond)            # shape: [2*N]
+            feat_dim = tri_feats.shape[-1]               # N = tri_feats feature dim (e.g. 96)
+            gamma = gamma_beta[:feat_dim].view(1, -1)    # shape [1, N]
+            beta  = gamma_beta[feat_dim:].view(1, -1)    # shape [1, N]
+            
+            # Track FiLM parameters for visualization
+            if is_train:
+                with torch.no_grad():
+                    self.film_stats['gamma_mean'].append(gamma.mean().item())
+                    self.film_stats['gamma_std'].append(gamma.std().item())
+                    self.film_stats['beta_mean'].append(beta.mean().item())
+                    self.film_stats['beta_std'].append(beta.std().item())
+                    self.film_stats['gamma_norm'].append(gamma.norm().item())
+                    self.film_stats['beta_norm'].append(beta.norm().item())
+            
+            # Apply FiLM: scale features by (1 + gamma) and add beta
+            tri_feats = tri_feats * (1 + gamma) + beta
+        
         appearance_out = self.appearance_dec(tri_feats)
         geometry_out = self.geometry_dec(tri_feats)
         
@@ -483,22 +576,30 @@ class HUGS_TRIMLP(nn.Module):
         # logger.add("logs/normal_alignment.log", format="{time} {level} {message}", level="INFO", rotation="1 MB")
         # logger.info(f"[NormalAlign] Cosine Sim → Mean: {mean_sim:.4f}, Min: {min_sim:.4f}, Max: {max_sim:.4f}")
 
-        if hasattr(self, 'body_pose') and self.body_pose is not None:
-            posevec = self.body_pose[dataset_idx].reshape(-1)  # (72,)
+        # Apply nonrigid deformation (only if enabled)
+        if self.use_nonrigid and hasattr(self, 'nonrigid_deformer'):
+            if hasattr(self, 'body_pose') and self.body_pose is not None:
+                posevec = self.body_pose[dataset_idx].reshape(-1)  # (72,)
+            else:
+                posevec = body_pose.reshape(-1)
+
+            # tri_feats already includes FiLM if enabled above
+            gs_xyz_deformed, delta = self.nonrigid_deformer.forward_from_parts(
+                posevec, gs_xyz, tri_feats
+            )
+
+            # losses
+            self.loss_nonrigid_reg    = torch.mean((gs_xyz_deformed - gs_xyz) ** 2)
+            self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(delta)
+            self.loss_nonrigid_delta  = (delta ** 2).sum(dim=-1).mean()
+
+            # use deformed xyz downstream
+            gs_xyz = gs_xyz_deformed
         else:
-            posevec = body_pose.reshape(-1)
-
-        pose_dim = posevec.shape[0]
-        nonrigid_input = torch.cat([
-            posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, pose_dim)
-            gs_xyz,  # (N, 3)
-            tri_feats  # (N, triplane_dim)
-        ], dim=-1)
-
-        nonrigid_delta = self.nonrigid_deformer(nonrigid_input)
-        self.loss_nonrigid_reg = torch.mean((nonrigid_delta - gs_xyz) ** 2)
-        self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(nonrigid_delta, gs_xyz)
-        gs_xyz = nonrigid_delta
+            delta = torch.zeros_like(gs_xyz)  # for logging consistency
+            self.loss_nonrigid_reg    = torch.tensor(0.0, device=self.device)
+            self.loss_nonrigid_smooth = torch.tensor(0.0, device=self.device)
+            self.loss_nonrigid_delta  = torch.tensor(0.0, device=self.device)
 
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
         gs_rotq = matrix_to_quaternion(gs_rotmat)
@@ -646,7 +747,7 @@ class HUGS_TRIMLP(nn.Module):
             'posedirs': posedirs,
             'gt_lbs_weights': gt_lbs_weights,
             'canon_normals': canon_normals,
-            'nonrigid_delta': nonrigid_delta,
+            'nonrigid_delta': delta,
         }
 
     def oneupSHdegree(self):
@@ -772,8 +873,14 @@ class HUGS_TRIMLP(nn.Module):
             {'params': self.deformation_dec.parameters(), 'lr': cfg.deformation, 'name': 'deform_dec'},
         ]
         
-        # Add nonrigid_deformer parameters if it exists
-        if hasattr(self, 'nonrigid_deformer'):
+        # Add FiLM parameters only if enabled
+        if self.use_film and hasattr(self, 'frame_emb'):
+            params.append({'params': self.frame_emb.parameters(), 'lr': cfg.deformation, 'name': 'frame_emb'})
+        if self.use_film and hasattr(self, 'film_layer'):
+            params.append({'params': self.film_layer.parameters(), 'lr': cfg.deformation, 'name': 'film_layer'})
+        
+        # Add nonrigid_deformer parameters only if enabled
+        if self.use_nonrigid and hasattr(self, 'nonrigid_deformer'):
             params.append({'params': self.nonrigid_deformer.parameters(), 'lr': cfg.deformation, 'name': 'nonrigid_deformer'})
         
         if hasattr(self, 'global_orient') and self.global_orient.requires_grad:
@@ -811,6 +918,93 @@ class HUGS_TRIMLP(nn.Module):
                 lr = self.xyz_scheduler_args(iteration)
                 param_group['lr'] = lr
                 return lr
+    
+    def get_film_stats(self):
+        """Get current FiLM parameter statistics for visualization"""
+        if not self.use_film or not hasattr(self, 'film_stats'):
+            return None
+        
+        stats = {}
+        for key, values in self.film_stats.items():
+            if len(values) > 0:
+                stats[key] = {
+                    'current': values[-1],
+                    'mean': sum(values) / len(values),
+                    'min': min(values),
+                    'max': max(values)
+                }
+        return stats
+    
+    def plot_film_stats(self, save_path=None):
+        """Plot FiLM parameter statistics"""
+        if not self.use_film or not hasattr(self, 'film_stats'):
+            return
+        
+        try:
+            import matplotlib.pyplot as plt
+            
+            fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+            fig.suptitle('FiLM Parameter Statistics', fontsize=16)
+            
+            # Plot gamma statistics
+            if len(self.film_stats['gamma_mean']) > 0:
+                axes[0, 0].plot(self.film_stats['gamma_mean'])
+                axes[0, 0].set_title('Gamma Mean')
+                axes[0, 0].set_ylabel('Mean Value')
+                
+                axes[0, 1].plot(self.film_stats['gamma_std'])
+                axes[0, 1].set_title('Gamma Std')
+                axes[0, 1].set_ylabel('Std Value')
+                
+                axes[0, 2].plot(self.film_stats['gamma_norm'])
+                axes[0, 2].set_title('Gamma Norm')
+                axes[0, 2].set_ylabel('L2 Norm')
+            
+            # Plot beta statistics
+            if len(self.film_stats['beta_mean']) > 0:
+                axes[1, 0].plot(self.film_stats['beta_mean'])
+                axes[1, 0].set_title('Beta Mean')
+                axes[1, 0].set_ylabel('Mean Value')
+                
+                axes[1, 1].plot(self.film_stats['beta_std'])
+                axes[1, 1].set_title('Beta Std')
+                axes[1, 1].set_ylabel('Std Value')
+                
+                axes[1, 2].plot(self.film_stats['beta_norm'])
+                axes[1, 2].set_title('Beta Norm')
+                axes[1, 2].set_ylabel('L2 Norm')
+            
+            plt.tight_layout()
+            
+            if save_path:
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                logger.info(f"FiLM stats plot saved to {save_path}")
+            else:
+                plt.show()
+            
+            plt.close()
+            
+        except ImportError:
+            logger.warning("matplotlib not available, skipping FiLM stats plot")
+        except Exception as e:
+            logger.warning(f"Failed to plot FiLM stats: {e}")
+    
+    def print_film_info(self):
+        """Print current FiLM parameter information"""
+        if not self.use_film:
+            logger.info("FiLM is disabled")
+            return
+        
+        if hasattr(self, 'frame_emb'):
+            logger.info(f"FiLM Frame Embedding: {self.frame_emb.num_embeddings} frames, {self.frame_emb.embedding_dim} dims")
+        if hasattr(self, 'film_layer'):
+            logger.info(f"FiLM Layer: {self.film_layer.in_features} -> {self.film_layer.out_features}")
+        
+        stats = self.get_film_stats()
+        if stats:
+            logger.info("Current FiLM Statistics:")
+            for param, values in stats.items():
+                logger.info(f"  {param}: current={values['current']:.4f}, mean={values['mean']:.4f}, range=[{values['min']:.4f}, {values['max']:.4f}]")
 
 
     def replace_tensor_to_optimizer(self, tensor, name):

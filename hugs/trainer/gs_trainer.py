@@ -118,7 +118,14 @@ class GaussianTrainer():
                     use_deformer=cfg.human.use_deformer,
                     disable_posedirs=cfg.human.disable_posedirs,
                     triplane_res=cfg.human.triplane_res,
-                    betas=init_betas[0]
+                    betas=init_betas[0],
+                    num_frames=max(
+                        len(self.train_dataset) if hasattr(self, 'train_dataset') else 0,
+                        len(self.val_dataset) if hasattr(self, 'val_dataset') else 0,
+                        len(self.test_dataset) if hasattr(self, 'test_dataset') else 0
+                    ),
+                    use_film=getattr(cfg.human, 'use_film', True),  # Default to True
+                    use_nonrigid=getattr(cfg.human, 'use_nonrigid', True),  # Default to True
                 )
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
                 if not cfg.eval:
@@ -299,17 +306,24 @@ class GaussianTrainer():
             if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_reg'):
                 nonrigid_reg_loss = self.human_gs.loss_nonrigid_reg
                 nonrigid_smooth_loss = self.human_gs.loss_nonrigid_smooth
+                nonrigid_delta_loss  = self.human_gs.loss_nonrigid_delta
                 nonrigid_delta_mag = torch.norm(human_gs_out['nonrigid_delta'], dim=-1).mean()
                 
                 # Add to loss_dict for monitoring
                 loss_dict['nonrigid_reg'] = nonrigid_reg_loss
                 loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
                 loss_dict['nonrigid_delta_mag'] = nonrigid_delta_mag
+
+                if hasattr(self.human_gs.nonrigid_deformer, 'delta_scale'):
+                    loss_dict['nonrigid_delta_scale'] = self.human_gs.nonrigid_deformer.delta_scale.detach()
+
                 
                 # Add to total loss with weights
                 loss = loss + self.cfg.human.loss.nonrigid_w * nonrigid_reg_loss
                 if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
                     loss = loss + self.cfg.human.loss.nonrigid_smooth_w * nonrigid_smooth_loss
+                if hasattr(self.cfg.human.loss, 'nonrigid_delta_w'):
+                    loss = loss + self.cfg.human.loss.nonrigid_delta_w * nonrigid_delta_loss
             else:
                 loss = loss
             loss.backward()
@@ -340,6 +354,11 @@ class GaussianTrainer():
                     log_gt_img = (gt_img.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
                     log_img = np.concatenate([log_gt_img, log_pred_img], axis=1)
                     save_images(log_img, f'{self.cfg.logdir}/train/{t_iter:06d}.png')
+                    
+                    # Plot FiLM statistics
+                    if self.human_gs and hasattr(self.human_gs, 'plot_film_stats'):
+                        self.human_gs.plot_film_stats(f'{self.cfg.logdir}/film_stats_{t_iter:06d}.png')
+                        self.human_gs.print_film_info()
             
             if t_iter >= self.cfg.scene.opt_start_iter:
                 if (t_iter - self.cfg.scene.opt_start_iter) < self.cfg.scene.densify_until_iter and self.cfg.mode in ['scene', 'human_scene']:
@@ -507,7 +526,7 @@ class GaussianTrainer():
                     betas=data['betas'], 
                     transl=data['transl'], 
                     smpl_scale=data['smpl_scale'][None],
-                    dataset_idx=-1,
+                    dataset_idx=-1,  # No FiLM during validation
                     is_train=False,
                     ext_tfs=None,
                 )
@@ -595,7 +614,7 @@ class GaussianTrainer():
                     betas=data['betas'],
                     transl=data['transl'],
                     smpl_scale=data['smpl_scale'][None],
-                    dataset_idx=-1,
+                    dataset_idx=-1,  # No FiLM during animation
                     is_train=False,
                     ext_tfs=ext_tfs,
                 )
@@ -662,7 +681,7 @@ class GaussianTrainer():
                     betas=data['betas'],
                     transl=data['transl'],
                     smpl_scale=data['smpl_scale'],
-                    dataset_idx=-1,
+                    dataset_idx=-1,  # No FiLM during canonical rendering
                     is_train=False,
                     ext_tfs=None,
                 )
