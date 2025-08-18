@@ -252,7 +252,25 @@ class HUGS_TRIMLP(nn.Module):
         
         # Load FiLM parameters if they exist in checkpoint and FiLM is enabled
         if self.use_film and 'frame_emb' in state_dict and hasattr(self, 'frame_emb'):
-            self.frame_emb.load_state_dict(state_dict['frame_emb'])
+            # Handle frame embedding size mismatch
+            saved_emb = state_dict['frame_emb']['weight']
+            current_emb = self.frame_emb.weight
+            
+            if saved_emb.shape[0] != current_emb.shape[0]:
+                logger.warning(f"Frame embedding size mismatch: saved={saved_emb.shape[0]}, current={current_emb.shape[0]}. Resizing...")
+                # Resize the embedding to match current size
+                if saved_emb.shape[0] > current_emb.shape[0]:
+                    # Take first N frames from saved embedding
+                    new_weight = saved_emb[:current_emb.shape[0]]
+                else:
+                    # Pad with zeros if current size is larger
+                    new_weight = torch.zeros_like(current_emb)
+                    new_weight[:saved_emb.shape[0]] = saved_emb
+                
+                self.frame_emb.weight.data = new_weight
+            else:
+                self.frame_emb.load_state_dict(state_dict['frame_emb'])
+                
         if self.use_film and 'film_layer' in state_dict and hasattr(self, 'film_layer'):
             self.film_layer.load_state_dict(state_dict['film_layer'])
         
@@ -338,20 +356,25 @@ class HUGS_TRIMLP(nn.Module):
         
         gs_xyz = self.get_xyz + xyz_offsets
         # ========= NEW: Compute normals from point geometry =========
-        with torch.no_grad():
-            canon_normals = compute_pointcloud_normals(gs_xyz.detach(), k=20)  # (N, 3)
+        # with torch.no_grad():
+        #     canon_normals = compute_pointcloud_normals(gs_xyz.detach(), k=20)  # (N, 3)
 
         # ============ Apply Non-Rigid Deformation ============
         if self.use_nonrigid and hasattr(self, 'nonrigid_deformer'):
+            # Ensure the deformer always receives 6D body pose (23*6 = 138)
             if hasattr(self, 'body_pose') and self.body_pose is not None:
-                posevec = self.body_pose[dataset_idx].reshape(-1)  # (pose_dim,)
+                posevec6d = self.body_pose[dataset_idx].reshape(-1, 6).reshape(-1)  # (138,)
             else:
-                posevec = body_pose.reshape(-1)
+                # body_pose may be axis-angle (23*3) or 6D (23*6)
+                if body_pose.shape[-1] == 6:
+                    posevec6d = body_pose.reshape(-1, 6).reshape(-1)  # (138,)
+                else:
+                    posevec6d = axis_angle_to_rotation_6d(body_pose.reshape(-1, 3)).reshape(-1)  # (138,)
 
             tri_feats = self.triplane(self.get_xyz)
             # tri_feats already includes FiLM if enabled above
             gs_xyz_deformed, delta = self.nonrigid_deformer.forward_from_parts(
-                posevec, gs_xyz, tri_feats
+                posevec6d, gs_xyz, tri_feats
             )
 
             # losses
@@ -558,34 +581,39 @@ class HUGS_TRIMLP(nn.Module):
         
         gs_xyz = self.get_xyz + xyz_offsets
 
-        with torch.no_grad():
-            geom_normals = compute_pointcloud_normals(gs_xyz, k=20)  # No detach needed here
+        # with torch.no_grad():
+        #     geom_normals = compute_pointcloud_normals(gs_xyz, k=20)  # No detach needed here
 
-        # Initialize canonical Z-up normal if not set
-        if not hasattr(self, "_canonical_normals"):
-            self._canonical_normals = torch.zeros_like(geom_normals)
-            self._canonical_normals[:, 2] = 1.0
+        # # Initialize canonical Z-up normal if not set
+        # if not hasattr(self, "_canonical_normals"):
+        #     self._canonical_normals = torch.zeros_like(geom_normals)
+        #     self._canonical_normals[:, 2] = 1.0
 
-        # # Cosine similarity between computed and canonical normals
-        # cos_sim = F.cosine_similarity(geom_normals, self._canonical_normals, dim=-1)
-        # mean_sim = cos_sim.mean().item()
-        # min_sim = cos_sim.min().item()
-        # max_sim = cos_sim.max().item()
-        #
-        # from loguru import logger
-        # logger.add("logs/normal_alignment.log", format="{time} {level} {message}", level="INFO", rotation="1 MB")
-        # logger.info(f"[NormalAlign] Cosine Sim → Mean: {mean_sim:.4f}, Min: {min_sim:.4f}, Max: {max_sim:.4f}")
+        # # # Cosine similarity between computed and canonical normals
+        # # cos_sim = F.cosine_similarity(geom_normals, self._canonical_normals, dim=-1)
+        # # mean_sim = cos_sim.mean().item()
+        # # min_sim = cos_sim.min().item()
+        # # max_sim = cos_sim.max().item()
+        # #
+        # # from loguru import logger
+        # # logger.add("logs/normal_alignment.log", format="{time} {level} {message}", level="INFO", rotation="1 MB")
+        # # logger.info(f"[NormalAlign] Cosine Sim → Mean: {mean_sim:.4f}, Min: {min_sim:.4f}, Max: {max_sim:.4f}")
 
         # Apply nonrigid deformation (only if enabled)
         if self.use_nonrigid and hasattr(self, 'nonrigid_deformer'):
+            # Ensure the deformer always receives 6D body pose (23*6 = 138)
             if hasattr(self, 'body_pose') and self.body_pose is not None:
-                posevec = self.body_pose[dataset_idx].reshape(-1)  # (72,)
+                posevec6d = self.body_pose[dataset_idx].reshape(-1, 6).reshape(-1)  # (138,)
             else:
-                posevec = body_pose.reshape(-1)
+                # body_pose may be axis-angle (23*3) or 6D (23*6)
+                if body_pose.shape[-1] == 6:
+                    posevec6d = body_pose.reshape(-1, 6).reshape(-1)  # (138,)
+                else:
+                    posevec6d = axis_angle_to_rotation_6d(body_pose.reshape(-1, 3)).reshape(-1)  # (138,)
 
             # tri_feats already includes FiLM if enabled above
             gs_xyz_deformed, delta = self.nonrigid_deformer.forward_from_parts(
-                posevec, gs_xyz, tri_feats
+                posevec6d, gs_xyz, tri_feats
             )
 
             # losses
@@ -898,6 +926,7 @@ class HUGS_TRIMLP(nn.Module):
         self.non_densify_params_keys = [
             'global_orient', 'body_pose', 'betas', 'transl', 
             'v_embed', 'geometry_dec', 'appearance_dec', 'deform_dec', 'nonrigid_deformer',
+            'frame_emb', 'film_layer',
         ]
         
         for param in params:
