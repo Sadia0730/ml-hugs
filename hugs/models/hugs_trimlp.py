@@ -34,7 +34,6 @@ from .modules.lbs import lbs_extra
 from .modules.smpl_layer import SMPL
 from .modules.triplane import TriPlane
 from .modules.decoders import AppearanceDecoder, DeformationDecoder, GeometryDecoder
-from hugs.utils.geometry import compute_pointcloud_normals
 
 
 SCALE_Z = 1e-5
@@ -282,8 +281,8 @@ class HUGS_TRIMLP(nn.Module):
         
         gs_xyz = self.get_xyz + xyz_offsets
         # ========= NEW: Compute normals from point geometry =========
-        with torch.no_grad():
-            canon_normals = compute_pointcloud_normals(gs_xyz.detach(), k=20)  # (N, 3)
+        # with torch.no_grad():
+        #     canon_normals = compute_pointcloud_normals(gs_xyz.detach(), k=20)  # (N, 3)
 
         # ============ Apply Non-Rigid Deformation ============
         if hasattr(self, 'body_pose') and self.body_pose is not None:
@@ -465,13 +464,13 @@ class HUGS_TRIMLP(nn.Module):
         
         gs_xyz = self.get_xyz + xyz_offsets
 
-        with torch.no_grad():
-            geom_normals = compute_pointcloud_normals(gs_xyz, k=20)  # No detach needed here
+        # with torch.no_grad():
+        #     geom_normals = compute_pointcloud_normals(gs_xyz, k=20)  # No detach needed here
 
         # Initialize canonical Z-up normal if not set
-        if not hasattr(self, "_canonical_normals"):
-            self._canonical_normals = torch.zeros_like(geom_normals)
-            self._canonical_normals[:, 2] = 1.0
+        # if not hasattr(self, "_canonical_normals"):
+        #     self._canonical_normals = torch.zeros_like(geom_normals)
+        #     self._canonical_normals[:, 2] = 1.0
 
         # # Cosine similarity between computed and canonical normals
         # cos_sim = F.cosine_similarity(geom_normals, self._canonical_normals, dim=-1)
@@ -489,6 +488,13 @@ class HUGS_TRIMLP(nn.Module):
             posevec = body_pose.reshape(-1)
 
         pose_dim = posevec.shape[0]
+        
+        # Set up triplane projection if dimensions don't match
+        actual_triplane_dim = tri_feats.shape[1]
+        if not hasattr(self.nonrigid_deformer, '_projection_setup'):
+            self.nonrigid_deformer.set_triplane_projection(actual_triplane_dim)
+            self.nonrigid_deformer._projection_setup = True
+        
         nonrigid_input = torch.cat([
             posevec.unsqueeze(0).expand(gs_xyz.shape[0], -1),  # (N, pose_dim)
             gs_xyz,  # (N, 3)

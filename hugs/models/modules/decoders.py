@@ -136,10 +136,12 @@ class NonRigidDeformer(nn.Module):
         self.xyz_dim = 3
         self.triplane_dim = triplane_dim
         
-        if use_film:
-            self.film = FiLMModulation(self.pose_dim, triplane_dim, hidden_dim=96) 
+        # Don't create FiLM here - we'll create it dynamically when we know the actual dimensions
+        self.film = None
         
-       
+        # Add projection layer to handle dimension mismatches
+        self.triplane_projection = None
+        
         self.fc1 = nn.Linear(self.input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.ln1 = nn.LayerNorm(hidden_dim)  
@@ -149,17 +151,32 @@ class NonRigidDeformer(nn.Module):
         nn.init.constant_(self.fc_out.weight, 0.0)
         nn.init.constant_(self.fc_out.bias, 0.0)
 
+    def set_triplane_projection(self, actual_triplane_dim):
+        """Set up projection layer if triplane dimensions don't match"""
+        if actual_triplane_dim != self.triplane_dim:
+            self.triplane_projection = nn.Linear(actual_triplane_dim, self.triplane_dim).to(self.fc1.weight.device)
+            logger.info(f"Added triplane projection: {actual_triplane_dim} -> {self.triplane_dim}")
+            
+            # Create FiLM with the projected dimension
+            if self.use_film and self.film is None:
+                self.film = FiLMModulation(self.pose_dim, self.triplane_dim, hidden_dim=96).to(self.fc1.weight.device)
+                logger.info(f"Created FiLM with projected triplane_dim: {self.triplane_dim}")
+
     def forward(self, x):
-       
-        pose = x[:, :self.pose_dim]  # First 72 dimensions
+        pose = x[:, :self.pose_dim]  # First pose_dim dimensions
         xyz = x[:, self.pose_dim:self.pose_dim + self.xyz_dim] 
         triplane_feats = x[:, self.pose_dim + self.xyz_dim:]  
         
-        if self.use_film:
+        # Apply projection if needed
+        if self.triplane_projection is not None:
+            triplane_feats = self.triplane_projection(triplane_feats)
+        
+        if self.use_film and self.film is not None:
             modulated_triplane = self.film(pose, triplane_feats)
             x = torch.cat([pose, xyz, modulated_triplane], dim=-1)
+        else:
+            x = torch.cat([pose, xyz, triplane_feats], dim=-1)
         
-       
         h = self.act(self.fc1(x))
         h = self.act(self.fc2(h))
         residual = h  # Store for residual connection
