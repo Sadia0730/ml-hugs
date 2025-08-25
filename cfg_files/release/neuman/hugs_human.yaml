@@ -10,7 +10,7 @@ eval: false
 bg_color: white
 dataset:
   name: neuman
-  seq: ["citron", "seattle", "bike", "lab", "jogging", "parkinglot"]
+  seq: "citron"
 train:
   batch_size: 4
   num_workers: 4
@@ -86,7 +86,7 @@ human:
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   densify_extent: 1.0
-  max_n_gaussians: 524288
+  max_n_gaussians: 200000
   percent_dense: 0.01
 scene:
   name: scene_gs
