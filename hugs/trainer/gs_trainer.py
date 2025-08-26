@@ -314,7 +314,8 @@ class GaussianTrainer():
                 loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
                 loss_dict['nonrigid_delta_mag'] = nonrigid_delta_mag
 
-                if hasattr(self.human_gs.nonrigid_deformer, 'delta_scale'):
+                # Only access deformer internals if it exists (use_nonrigid may be False)
+                if hasattr(self.human_gs, 'nonrigid_deformer') and hasattr(self.human_gs.nonrigid_deformer, 'delta_scale'):
                     loss_dict['nonrigid_delta_scale'] = self.human_gs.nonrigid_deformer.delta_scale.detach()
 
                 

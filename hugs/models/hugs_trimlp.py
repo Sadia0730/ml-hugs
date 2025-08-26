@@ -206,7 +206,6 @@ class HUGS_TRIMLP(nn.Module):
             'appearance_dec': self.appearance_dec.state_dict(),
             'geometry_dec': self.geometry_dec.state_dict(),
             'deformation_dec': self.deformation_dec.state_dict(),
-            'nonrigid_deformer': self.nonrigid_deformer.state_dict(),
             'scaling_multiplier': self.scaling_multiplier,
             'max_radii2D': self.max_radii2D,
             'xyz_gradient_accum': self.xyz_gradient_accum,
@@ -214,6 +213,10 @@ class HUGS_TRIMLP(nn.Module):
             'optimizer': self.optimizer.state_dict(),
             'spatial_lr_scale': self.spatial_lr_scale,
         }
+        
+        # Save nonrigid deformer state only when enabled and present
+        if getattr(self, 'use_nonrigid', False) and hasattr(self, 'nonrigid_deformer'):
+            save_dict['nonrigid_deformer'] = self.nonrigid_deformer.state_dict()
         
         # Add FiLM parameters only if enabled
         if self.use_film and hasattr(self, 'frame_emb'):

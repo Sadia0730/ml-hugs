@@ -10,7 +10,7 @@ eval: false
 bg_color: white
 dataset:
   name: neuman
-  seq: ["lab", "citron", "seattle", "bike", "jogging", "parkinglot"]
+  seq: "citron"
 train:
   batch_size: 1
   num_workers: 0
@@ -46,6 +46,9 @@ human:
   canon_nframes: 60
   canon_pose_type: da_pose
   knn_n_hops: 3
+  # Ablation flags for FiLM and nonrigid deformation
+  use_film: true      # Set to false to disable FiLM
+  use_nonrigid: false  # Set to false to disable nonrigid deformation
   lr:
     wd: 0.0
     position: 0.00016
@@ -74,7 +77,8 @@ human:
     ssim_w: 0.2
     l1_w: 0.8
     lpips_w: 1.0
-    nonrigid_w: 0.2
+    nonrigid_w: 0.1
+    nonrigid_smooth_w: 0.001
     lbs_w: 1000.0
     humansep_w: 1.0
     num_patches: 4
