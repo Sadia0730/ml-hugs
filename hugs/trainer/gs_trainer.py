@@ -48,6 +48,15 @@ def get_train_dataset(cfg):
     
     return dataset
 
+# --- helpers for the nonrigid schedule ---
+def _lerp( a: float, b: float, t: float) -> float:
+    t = max(0.0, min(1.0, float(t)))
+    return a + (b - a) * t
+
+def _set_requires_grad(module, flag: bool):
+    for p in module.parameters():
+        p.requires_grad = flag
+# -----------------------------------------
 
 def get_val_dataset(cfg):
     if cfg.dataset.name == 'neuman':
@@ -56,12 +65,12 @@ def get_val_dataset(cfg):
    
     return dataset
 
-def get_test_dataset(cfg):
-    if cfg.dataset.name == 'neuman':
-        logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-test')
-        dataset = NeumanDataset(cfg.dataset.seq, 'test', cfg.mode)
+# def get_test_dataset(cfg):
+#     if cfg.dataset.name == 'neuman':
+#         logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-test')
+#         dataset = NeumanDataset(cfg.dataset.seq, 'test', cfg.mode)
    
-    return dataset
+#     return dataset
 
 
 def get_anim_dataset(cfg):
@@ -82,7 +91,7 @@ class GaussianTrainer():
         if not cfg.eval:
             self.train_dataset = get_train_dataset(cfg)
         self.val_dataset = get_val_dataset(cfg)
-        self.test_dataset = get_test_dataset(cfg)
+        # self.test_dataset = get_test_dataset(cfg)
         self.anim_dataset = get_anim_dataset(cfg)
         
         self.eval_metrics = {}
@@ -126,6 +135,8 @@ class GaussianTrainer():
                     ),
                     use_film=getattr(cfg.human, 'use_film', True),  # Default to True
                     use_nonrigid=getattr(cfg.human, 'use_nonrigid', True),  # Default to True
+                    use_nonrigid_post=getattr(cfg.human, 'use_nonrigid_post', False),
+                    nonrigid=getattr(cfg.human, 'nonrigid', None),
                 )
                 self.human_gs.create_betas(init_betas[0], cfg.human.optim_betas)
                 if not cfg.eval:
@@ -134,6 +145,63 @@ class GaussianTrainer():
                 elif cfg.human.use_deformer:
                     # Initialize for eval mode when using deformer
                     self.human_gs.initialize()
+
+                # ----- OPTIONAL nonrigid schedule gate (no-op unless enabled) -----
+                self.nr_sched = None  # None => disabled
+                if getattr(cfg.human, 'use_nonrigid_schedule', False) and hasattr(self.human_gs, 'nonrigid_deformer'):
+                    sched = getattr(cfg.human, 'nonrigid_schedule', {})
+                    self.nr_sched = {
+                        'enable_at':             int(sched.get('enable_at', 8000)),
+                        'ramp_for':              int(sched.get('ramp_for', 6000)),
+                        'reg_w_start':           float(sched.get('reg_w_start', 1e-3)),
+                        'reg_w_end':             float(sched.get('reg_w_end', 1e-5)),
+                        'smooth_w_start':        float(sched.get('smooth_w_start', 1e-3)),
+                        'smooth_w_end':          float(sched.get('smooth_w_end', 3e-4)),
+                        'max_delta_scale_start': float(sched.get('max_delta_scale_start', 0.05)),
+                        'max_delta_scale_end':   float(sched.get('max_delta_scale_end', 0.20)),
+                        'lr_mult':               float(sched.get('lr_mult', 1.0)),
+                    }
+
+                    # Phase 1: start nonrigid OFF and frozen so optimizer excludes it
+                    self.human_gs.use_nonrigid = False
+                    _set_requires_grad(self.human_gs.nonrigid_deformer, False)
+
+                    if hasattr(self.human_gs.nonrigid_deformer, 'delta_scale'):
+                        self.human_gs.nonrigid_deformer.delta_scale.requires_grad = False
+                        with torch.no_grad():
+                            self.human_gs.nonrigid_deformer.delta_scale.clamp_(0.0, self.nr_sched['max_delta_scale_start'])
+
+                    self._nr_param_group_added = False
+                    self._nr_reg_w = 0.0
+                    self._nr_smooth_w = 0.0
+                # -----------------------------------------------------------------
+
+                # ----- OPTIONAL post-nonrigid schedule gate -----
+                # self.nr_post_sched = None
+                # if getattr(cfg.human, 'use_nonrigid_schedule_post', False) and \
+                #    hasattr(self.human_gs, 'nonrigid_post') and getattr(self.human_gs, 'use_nonrigid_post', False):
+                #     sched = getattr(cfg.human, 'nonrigid_schedule_post', {})
+                #     self.nr_post_sched = {
+                #         'enable_at':             int(sched.get('enable_at', 8000)),
+                #         'ramp_for':              int(sched.get('ramp_for', 6000)),
+                #         'reg_w_start':           float(sched.get('reg_w_start', 1e-3)),
+                #         'reg_w_end':             float(sched.get('reg_w_end', 1e-5)),
+                #         'smooth_w_start':        float(sched.get('smooth_w_start', 1e-3)),
+                #         'smooth_w_end':          float(sched.get('smooth_w_end', 3e-4)),
+                #         'max_delta_scale_start': float(sched.get('max_delta_scale_start', 0.05)),
+                #         'max_delta_scale_end':   float(sched.get('max_delta_scale_end', 0.20)),
+                #         'lr_mult':               float(sched.get('lr_mult', 1.0)),
+                #     }
+                #     # start POST OFF/frozen so optimizer excludes it
+                #     _set_requires_grad(self.human_gs.nonrigid_post, False)
+                #     if hasattr(self.human_gs, 'delta_scale_post'):
+                #         self.human_gs.delta_scale_post.requires_grad = False
+                #         with torch.no_grad():
+                #             self.human_gs.delta_scale_post.clamp_(0.0, self.nr_post_sched['max_delta_scale_start'])
+                #     self._nr_post_param_group_added = False
+                #     self._nr_post_reg_w = 0.0
+                #     self._nr_post_smooth_w = 0.0
+                # -----------------------------------------------------------------
         
         if cfg.mode in ['scene', 'human_scene']:
             self.scene_gs = SceneGS(
@@ -233,6 +301,113 @@ class GaussianTrainer():
                 pose_type=self.cfg.human.canon_pose_type
             )
 
+    def _update_nonrigid_phase(self, step: int):
+        # no-op if schedule disabled
+        if self.nr_sched is None or not (self.human_gs and hasattr(self.human_gs, "nonrigid_deformer")):
+            return
+
+        cfg = self.nr_sched
+        enable_at = cfg["enable_at"]
+        ramp_for  = max(1, cfg["ramp_for"])
+
+        if step < enable_at:
+            # Phase 1: OFF + frozen
+            self.human_gs.use_nonrigid = False
+            _set_requires_grad(self.human_gs.nonrigid_deformer, False)
+            if hasattr(self.human_gs.nonrigid_deformer, "delta_scale"):
+                self.human_gs.nonrigid_deformer.delta_scale.requires_grad = False
+                with torch.no_grad():
+                    self.human_gs.nonrigid_deformer.delta_scale.clamp_(0.0, cfg["max_delta_scale_start"])
+            self._nr_reg_w = cfg["reg_w_start"]
+            self._nr_smooth_w = cfg["smooth_w_start"]
+            return
+
+        if step == enable_at:
+            # flip ON and unfreeze; add param group now
+            print(f"[NonRigid Schedule] Nonrigid deformation ENABLED at iteration {step}")
+            self.human_gs.use_nonrigid = True
+            _set_requires_grad(self.human_gs.nonrigid_deformer, True)
+            if hasattr(self.human_gs.nonrigid_deformer, "delta_scale"):
+                self.human_gs.nonrigid_deformer.delta_scale.requires_grad = True
+
+            if not self._nr_param_group_added:
+                # Get all existing parameters in the optimizer
+                existing_params = set()
+                for group in self.human_gs.optimizer.param_groups:
+                    existing_params.update(group['params'])
+                
+                # Filter out parameters that are already in the optimizer
+                nr_params = [p for p in self.human_gs.nonrigid_deformer.parameters() 
+                           if p.requires_grad and p not in existing_params]
+                
+                if len(nr_params) > 0:  # Only add group if there are new parameters
+                    base_lr = self.human_gs.optimizer.param_groups[0]["lr"]
+                    self.human_gs.optimizer.add_param_group({
+                        "params": nr_params,
+                        "lr": base_lr * cfg["lr_mult"],
+                        "name": "nonrigid_deformer"
+                    })
+                self._nr_param_group_added = True
+
+        # ramp regularizers and max delta_scale
+        t = max(0.0, min(1.0, (step - enable_at) / float(ramp_for)))
+        self._nr_reg_w    = _lerp(cfg["reg_w_start"],    cfg["reg_w_end"],    t)
+        self._nr_smooth_w = _lerp(cfg["smooth_w_start"], cfg["smooth_w_end"], t)
+
+        if hasattr(self.human_gs.nonrigid_deformer, "delta_scale"):
+            max_scale = _lerp(cfg["max_delta_scale_start"], cfg["max_delta_scale_end"], t)
+            with torch.no_grad():
+                self.human_gs.nonrigid_deformer.delta_scale.clamp_(0.0, max_scale)
+
+    # def _update_nonrigid_post_phase(self, step: int):
+    #     if self.nr_post_sched is None or not (self.human_gs and hasattr(self.human_gs, "nonrigid_post")):
+    #         return
+    #     cfg = self.nr_post_sched
+    #     enable_at = cfg["enable_at"]; ramp_for = max(1, cfg["ramp_for"])
+
+    #     if step < enable_at:
+    #         _set_requires_grad(self.human_gs.nonrigid_post, False)
+    #         if hasattr(self.human_gs, 'delta_scale_post'):
+    #         self.human_gs.delta_scale_post.requires_grad = False
+    #         with torch.no_grad():
+    #             self.human_gs.delta_scale_post.clamp_(0.0, cfg["max_delta_scale_start"])
+    #         self._nr_post_reg_w = cfg["reg_w_start"]; self._nr_post_smooth_w = cfg["smooth_w_start"]
+    #         return
+
+    #     if step == enable_at:
+    #         print(f"[NonRigid POST Schedule] ENABLED at iteration {step}")
+    #         _set_requires_grad(self.human_gs.nonrigid_post, True)
+    #         if hasattr(self.human_gs, 'delta_scale_post'):
+    #             self.human_gs.delta_scale_post.requires_grad = True
+    #         if not self._nr_post_param_group_added:
+    #             # Get all existing parameters in the optimizer
+    #             existing_params = set()
+    #             for group in self.human_gs.optimizer.param_groups:
+    #             existing_params.update(group['params'])
+                
+    #             # Filter out parameters that are already in the optimizer
+    #             nr_params = [p for p in self.human_gs.nonrigid_post.parameters() 
+    #                        if p.requires_grad and p not in existing_params]
+                
+    #             if hasattr(self.human_gs, 'delta_scale_post') and self.human_gs.delta_scale_post.requires_grad:
+    #                 if self.human_gs.delta_scale_post not in existing_params:
+    #                         nr_params.append(self.human_gs.delta_scale_post)
+                
+    #             if nr_params:  # Only add group if there are new parameters
+    #                 base_lr = self.human_gs.optimizer.param_groups[0]["lr"]
+    #                 self.human_gs.optimizer.add_param_group({
+    #                     "params": nr_params, "lr": base_lr * cfg["lr_mult"], "name": "nonrigid_post"
+    #                 })
+    #             self._nr_post_param_group_added = True
+
+    #     t = max(0.0, min(1.0, (step - enable_at) / float(ramp_for)))
+    #     self._nr_post_reg_w    = _lerp(cfg["reg_w_start"],    cfg["reg_w_end"],    t)
+    #     self._nr_post_smooth_w = _lerp(cfg["smooth_w_start"], cfg["smooth_w_end"], t)
+    #     if hasattr(self.human_gs, 'delta_scale_post'):
+    #         max_scale = _lerp(cfg["max_delta_scale_start"], cfg["max_delta_scale_end"], t)
+    #         with torch.no_grad():
+    #             self.human_gs.delta_scale_post.clamp_(0.0, max_scale)
+
     def train(self):
         if self.human_gs:
             self.human_gs.train()
@@ -242,6 +417,10 @@ class GaussianTrainer():
         rand_idx_iter = RandomIndexIterator(len(self.train_dataset))
         sgrad_means, sgrad_stds = [], []
         for t_iter in range(self.cfg.train.num_steps+1):
+            # only does work if self.nr_sched is not None
+            self._update_nonrigid_phase(t_iter)
+            # only does work if self.nr_post_sched is not None
+            # self._update_nonrigid_post_phase(t_iter)
             render_mode = self.cfg.mode
             
             if self.scene_gs and self.cfg.train.optim_scene:
@@ -303,14 +482,13 @@ class GaussianTrainer():
             )
             
             # Add nonrigid deformer losses to monitoring
-            if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_reg'):
-                nonrigid_reg_loss = self.human_gs.loss_nonrigid_reg
+            if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_l2'):
+                nonrigid_l2_loss = self.human_gs.loss_nonrigid_l2
                 nonrigid_smooth_loss = self.human_gs.loss_nonrigid_smooth
-                nonrigid_delta_loss  = self.human_gs.loss_nonrigid_delta
                 nonrigid_delta_mag = torch.norm(human_gs_out['nonrigid_delta'], dim=-1).mean()
                 
                 # Add to loss_dict for monitoring
-                loss_dict['nonrigid_reg'] = nonrigid_reg_loss
+                loss_dict['nonrigid_l2'] = nonrigid_l2_loss
                 loss_dict['nonrigid_smooth'] = nonrigid_smooth_loss
                 loss_dict['nonrigid_delta_mag'] = nonrigid_delta_mag
 
@@ -318,13 +496,40 @@ class GaussianTrainer():
                 if hasattr(self.human_gs, 'nonrigid_deformer') and hasattr(self.human_gs.nonrigid_deformer, 'delta_scale'):
                     loss_dict['nonrigid_delta_scale'] = self.human_gs.nonrigid_deformer.delta_scale.detach()
 
-                
-                # Add to total loss with weights
-                loss = loss + self.cfg.human.loss.nonrigid_w * nonrigid_reg_loss
-                if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
-                    loss = loss + self.cfg.human.loss.nonrigid_smooth_w * nonrigid_smooth_loss
-                if hasattr(self.cfg.human.loss, 'nonrigid_delta_w'):
-                    loss = loss + self.cfg.human.loss.nonrigid_delta_w * nonrigid_delta_loss
+                if self.nr_sched is not None and getattr(self.human_gs, "use_nonrigid", False):
+                    # scheduled weights (no double-count): use L2 + smoothness
+                    loss = loss + self._nr_reg_w    * nonrigid_l2_loss \
+                                + self._nr_smooth_w * nonrigid_smooth_loss
+                else:
+                    # your existing static weights
+                    loss = loss + self.cfg.human.loss.nonrigid_w * nonrigid_l2_loss
+                    if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
+                        loss = loss + self.cfg.human.loss.nonrigid_smooth_w * nonrigid_smooth_loss
+
+            # POST regularizers (mirror PRE logic)
+            # if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_post_l2'):
+            #     loss_dict['nonrigid_post_l2'] = self.human_gs.loss_nonrigid_post_l2
+            #     loss_dict['nonrigid_post_smooth'] = self.human_gs.loss_nonrigid_post_smooth
+            #     # just for monitoring magnitude (optional)
+            #     if 'nonrigid_post_delta' in human_gs_out:
+            #         loss_dict['nonrigid_post_delta_mag'] = torch.norm(human_gs_out['nonrigid_post_delta'], dim=-1).mean()
+
+            #     if getattr(self, 'nr_post_sched', None) is not None:
+            #         loss = loss + self._nr_post_reg_w    * self.human_gs.loss_nonrigid_post_l2 \
+            #                     + self._nr_post_smooth_w * self.human_gs.loss_nonrigid_post_smooth
+            #     else:
+            #         loss = loss + self.cfg.human.loss.nonrigid_w * self.human_gs.loss_nonrigid_post_l2
+            #         if hasattr(self.cfg.human.loss, 'nonrigid_smooth_w'):
+            #         loss = loss + self.cfg.human.loss.nonrigid_smooth_w * self.human_gs.loss_nonrigid_post_smooth
+
+            # Cycle consistency (optional)
+            if self.human_gs and hasattr(self.human_gs, 'loss_nonrigid_cycle') and \
+               getattr(self.human_gs, 'use_cycle', False):
+                loss_dict['nonrigid_cycle'] = self.human_gs.loss_nonrigid_cycle
+                # weight from YAML: human.nonrigid.cycle_w
+                cycle_w = float(getattr(self.cfg.human, 'nonrigid', {}).get('cycle_w', 0.0))
+                loss = loss + cycle_w * self.human_gs.loss_nonrigid_cycle
+
             else:
                 loss = loss
             loss.backward()
@@ -495,14 +700,8 @@ class GaussianTrainer():
     
     @torch.no_grad()
     def validate(self, iter=None):
-        self._validate(self.val_dataset, iter, 'val')
-    
-    @torch.no_grad()
-    def validate_test(self, iter=None):
-        self._validate(self.test_dataset, iter, 'test')
-    
-    @torch.no_grad()
-    def _validate(self, dataset, iter=None, split_name='val'):
+        dataset = self.val_dataset
+        split_name = 'val'
         
         iter_s = 'final' if iter is None else f'{iter:06d}'
         
@@ -516,7 +715,7 @@ class GaussianTrainer():
         metrics = dict.fromkeys(['_'.join(x) for x in itertools.product(methods, metrics)])
         metrics = {k: [] for k in metrics}
         
-        for idx, data in enumerate(tqdm(dataset, desc=f"{split_name.capitalize()} Validation")):
+        for idx, data in enumerate(tqdm(dataset, desc="Validation")):
             human_gs_out, scene_gs_out = None, None
             render_mode = self.cfg.mode
             
@@ -527,7 +726,7 @@ class GaussianTrainer():
                     betas=data['betas'], 
                     transl=data['transl'], 
                     smpl_scale=data['smpl_scale'][None],
-                    dataset_idx=-1,  # No FiLM during validation
+                    dataset_idx=-1,
                     is_train=False,
                     ext_tfs=None,
                 )
@@ -561,7 +760,7 @@ class GaussianTrainer():
             metrics['hugs_lpips'].append(self.lpips(image.clip(max=1), gt_image).mean().double())
             
             log_img = torchvision.utils.make_grid([gt_image, image], nrow=2, pad_value=1)
-            imf = f'{self.cfg.logdir}/{split_name}/full_{iter_s}_{idx:03d}.png'
+            imf = f'{self.cfg.logdir}/val/full_{iter_s}_{idx:03d}.png'
             os.makedirs(os.path.dirname(imf), exist_ok=True)
             torchvision.utils.save_image(log_img, imf)
             
@@ -578,7 +777,7 @@ class GaussianTrainer():
             
             if len(log_img) > 0:
                 log_img = torchvision.utils.make_grid(log_img, nrow=len(log_img), pad_value=1)
-                torchvision.utils.save_image(log_img, f'{self.cfg.logdir}/{split_name}/human_{iter_s}_{idx:03d}.png')
+                torchvision.utils.save_image(log_img, f'{self.cfg.logdir}/val/human_{iter_s}_{idx:03d}.png')
         
         
         self.eval_metrics[iter_s] = {}

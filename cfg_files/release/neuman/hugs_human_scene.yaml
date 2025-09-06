@@ -14,10 +14,10 @@ dataset:
 train:
   batch_size: 1
   num_workers: 0
-  num_steps: 14998
-  save_ckpt_interval: 15000
+  num_steps: 15998
+  save_ckpt_interval: 16000
   val_interval: 1000
-  anim_interval: 15000
+  anim_interval: 16000
   optim_scene: true
   save_progress_images: false
   progress_save_interval: 10
@@ -46,9 +46,19 @@ human:
   canon_nframes: 60
   canon_pose_type: da_pose
   knn_n_hops: 3
-  # Ablation flags for FiLM and nonrigid deformation
-  use_film: true      # Set to false to disable FiLM
-  use_nonrigid: false  # Set to false to disable nonrigid deformation
+  use_film: false      
+  use_nonrigid: false   
+  use_nonrigid_schedule: false     
+  nonrigid_schedule:              
+    enable_at: 8000
+    ramp_for: 6000
+    reg_w_start: 1.0e-3
+    reg_w_end:   1.0e-5
+    smooth_w_start: 1.0e-3
+    smooth_w_end:   3.0e-4
+    max_delta_scale_start: 0.05
+    max_delta_scale_end:   0.20
+    lr_mult: 1.0   
   lr:
     wd: 0.0
     position: 0.00016

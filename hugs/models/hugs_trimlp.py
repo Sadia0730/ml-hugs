@@ -9,6 +9,7 @@ import torch.nn as nn
 from torch import nn
 from loguru import logger
 import torch.nn.functional as F
+from typing import Optional
 from hugs.models.hugs_wo_trimlp import smpl_lbsmap_top_k, smpl_lbsweight_top_k
 from hugs.models.modules.decoders import NonRigidDeformer  # Add this import
 from hugs.utils.general import (
@@ -77,6 +78,8 @@ class HUGS_TRIMLP(nn.Module):
         num_frames=0,
         use_film=True,  # New ablation flag for FiLM
         use_nonrigid=True,  # New ablation flag for nonrigid deformation
+        use_nonrigid_post: bool=False,  # NEW: post-LBS residual
+        nonrigid: Optional[dict] = None   # NEW: nested opts (use_cycle, cycle_w)
     ):
         super(HUGS_TRIMLP, self).__init__()
         
@@ -155,7 +158,24 @@ class HUGS_TRIMLP(nn.Module):
                 use_smoothness=True  # Can be set to False for maximum speed
             ).to('cuda')
             logger.info(f"Initialized NonRigidDeformer with input_dim={pose_dim + xyz_dim}, triplane_dim={self.triplane_dim}")
-        
+        # -------- POST nonrigid (new) --------
+        self.use_nonrigid_post = bool(use_nonrigid_post)
+        # cycle options from nested dict
+        nonrigid = nonrigid or {}
+        self.use_cycle = bool(nonrigid.get('use_cycle', False))
+        self.cycle_w   = float(nonrigid.get('cycle_w', 0.0))
+        if self.use_nonrigid_post:
+            pose_dim = 138  # 23*6
+            self.nonrigid_post = NonRigidDeformer(
+                input_dim=pose_dim + 3,
+                triplane_dim=self.triplane_dim,
+                hidden_dim=128,
+                act='gelu',
+                use_smoothness=True
+            ).to('cuda')
+            # gated magnitude so a schedule can clamp/ramp
+            self.delta_scale_post = nn.Parameter(torch.tensor(0.0, device='cuda'))
+            logger.info("Initialized post-LBS NonRigidDeformer.")
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -227,6 +247,14 @@ class HUGS_TRIMLP(nn.Module):
         # Add ablation flags
         save_dict['use_film'] = self.use_film
         save_dict['use_nonrigid'] = self.use_nonrigid
+
+        if getattr(self, 'use_nonrigid_post', False) and hasattr(self, 'nonrigid_post'):
+            save_dict['nonrigid_post'] = self.nonrigid_post.state_dict()
+        if hasattr(self, 'delta_scale_post'):
+            save_dict['delta_scale_post'] = self.delta_scale_post
+        # flags
+        save_dict['use_nonrigid_post'] = self.use_nonrigid_post
+        save_dict['use_cycle'] = self.use_cycle
             
         return save_dict
     
@@ -239,6 +267,13 @@ class HUGS_TRIMLP(nn.Module):
         opt_dict = state_dict['optimizer']
         self.spatial_lr_scale = state_dict['spatial_lr_scale']
         
+        # --- load ablation/feature flags EARLY so dependent modules align ---
+        self.use_film = state_dict.get('use_film', getattr(self, 'use_film', False))
+        self.use_nonrigid = state_dict.get('use_nonrigid', getattr(self, 'use_nonrigid', False))
+        self.use_nonrigid_post = state_dict.get('use_nonrigid_post', getattr(self, 'use_nonrigid_post', False))
+        self.use_cycle = state_dict.get('use_cycle', getattr(self, 'use_cycle', False))
+
+
         self.triplane.load_state_dict(state_dict['triplane'])
         self.appearance_dec.load_state_dict(state_dict['appearance_dec'])
         self.geometry_dec.load_state_dict(state_dict['geometry_dec'])
@@ -284,7 +319,21 @@ class HUGS_TRIMLP(nn.Module):
             self.use_nonrigid = state_dict['use_nonrigid']
             
         self.scaling_multiplier = state_dict['scaling_multiplier']
-        
+        # flags for post & cycle
+        self.use_nonrigid_post = state_dict.get('use_nonrigid_post', getattr(self, 'use_nonrigid_post', False))
+        self.use_cycle = state_dict.get('use_cycle', getattr(self, 'use_cycle', False))
+
+        # post module / gate
+        if self.use_nonrigid_post and 'nonrigid_post' in state_dict and hasattr(self, 'nonrigid_post'):
+            self.nonrigid_post.load_state_dict(state_dict['nonrigid_post'])
+        if 'delta_scale_post' in state_dict and hasattr(self, 'delta_scale_post'):
+            try:
+                src = state_dict['delta_scale_post']
+                src_t = src.data if hasattr(src, 'data') else src
+                self.delta_scale_post.data.copy_(src_t.to(self.device))
+            except Exception:
+                self.delta_scale_post = torch.nn.Parameter(state_dict['delta_scale_post'].to(self.device))
+
         if cfg is None:
             from hugs.cfg.config import cfg as default_cfg
             cfg = default_cfg.human.lr
@@ -381,17 +430,15 @@ class HUGS_TRIMLP(nn.Module):
             )
 
             # losses
-            self.loss_nonrigid_reg    = torch.mean((gs_xyz_deformed - gs_xyz) ** 2)
+            self.loss_nonrigid_l2     = torch.mean((delta ** 2))  # L2 regularization on deformation delta
             self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(delta)
-            self.loss_nonrigid_delta  = (delta ** 2).sum(dim=-1).mean()
 
             # use deformed xyz downstream
             gs_xyz = gs_xyz_deformed
         else:
             delta = torch.zeros_like(gs_xyz)  # for logging consistency
-            self.loss_nonrigid_reg    = torch.tensor(0.0, device=self.device)
+            self.loss_nonrigid_l2     = torch.tensor(0.0, device=self.device)
             self.loss_nonrigid_smooth = torch.tensor(0.0, device=self.device)
-            self.loss_nonrigid_delta  = torch.tensor(0.0, device=self.device)
         # ======================================================
 
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
@@ -449,6 +496,39 @@ class HUGS_TRIMLP(nn.Module):
                 smpl_output.full_pose, disable_posedirs=self.disable_posedirs, pose2rot=True
             )
             deformed_xyz = deformed_xyz.squeeze(0)
+            # ===== POST nonrigid (after LBS) =====
+            deformed_from_pre = deformed_xyz  # save target for cycle
+            if getattr(self, 'use_nonrigid_post', False) and hasattr(self, 'nonrigid_post'):
+                # pose as 6D
+                if hasattr(self, 'body_pose') and self.body_pose is not None and dataset_idx is not None and dataset_idx >= 0:
+                    posevec6d_post = self.body_pose[dataset_idx].reshape(-1, 6).reshape(-1)  # (138,)
+                else:
+                    if body_pose.shape[-1] == 6:
+                        posevec6d_post = body_pose.reshape(-1, 6).reshape(-1)
+                    else:
+                        posevec6d_post = axis_angle_to_rotation_6d(body_pose.reshape(-1, 3)).reshape(-1)
+
+                # reuse tri_feats computed earlier (canonical features stabilize)
+                deformed_xyz_post, delta_post = self.nonrigid_post.forward_from_parts(
+                    posevec6d_post, deformed_xyz, tri_feats
+                )
+                delta_post = torch.tanh(self.delta_scale_post) * delta_post  # gated
+                # regularizers
+                self.loss_nonrigid_post_l2     = (delta_post ** 2).mean()
+                self.loss_nonrigid_post_smooth = self.nonrigid_post.smoothness_loss(delta_post)
+
+                deformed_xyz = deformed_xyz_post
+            else:
+                delta_post = torch.zeros_like(deformed_xyz)
+                self.loss_nonrigid_post_l2     = torch.tensor(0.0, device=self.device)
+                self.loss_nonrigid_post_smooth = torch.tensor(0.0, device=self.device)
+
+            # ===== Optional cycle: push POST to match (pre→LBS) =====
+            if getattr(self, 'use_cycle', False) and getattr(self, 'use_nonrigid_post', False) and getattr(self, 'use_nonrigid', False):
+                self.loss_nonrigid_cycle = (deformed_from_pre.detach() - deformed_xyz).pow(2).mean()
+            else:
+                self.loss_nonrigid_cycle = torch.tensor(0.0, device=self.device)
+
             lbs_T = lbs_T.squeeze(0)
 
             with torch.no_grad():
@@ -531,6 +611,8 @@ class HUGS_TRIMLP(nn.Module):
             'gt_lbs_weights': gt_lbs_weights,
             'canon_normals': canon_normals,
             'nonrigid_delta': delta,
+            'nonrigid_post_delta': delta_post,
+
         }
          
     def forward(
@@ -620,17 +702,15 @@ class HUGS_TRIMLP(nn.Module):
             )
 
             # losses
-            self.loss_nonrigid_reg    = torch.mean((gs_xyz_deformed - gs_xyz) ** 2)
+            self.loss_nonrigid_l2     = torch.mean((delta ** 2))  # L2 regularization on deformation delta
             self.loss_nonrigid_smooth = self.nonrigid_deformer.smoothness_loss(delta)
-            self.loss_nonrigid_delta  = (delta ** 2).sum(dim=-1).mean()
 
             # use deformed xyz downstream
             gs_xyz = gs_xyz_deformed
         else:
             delta = torch.zeros_like(gs_xyz)  # for logging consistency
-            self.loss_nonrigid_reg    = torch.tensor(0.0, device=self.device)
+            self.loss_nonrigid_l2     = torch.tensor(0.0, device=self.device)
             self.loss_nonrigid_smooth = torch.tensor(0.0, device=self.device)
-            self.loss_nonrigid_delta  = torch.tensor(0.0, device=self.device)
 
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
         gs_rotq = matrix_to_quaternion(gs_rotmat)
@@ -691,6 +771,39 @@ class HUGS_TRIMLP(nn.Module):
                 smpl_output.full_pose, disable_posedirs=self.disable_posedirs, pose2rot=True
             )
             deformed_xyz = deformed_xyz.squeeze(0)
+            # ===== POST nonrigid (after LBS) =====
+            deformed_from_pre = deformed_xyz  # save target for cycle
+            if getattr(self, 'use_nonrigid_post', False) and hasattr(self, 'nonrigid_post'):
+                # pose as 6D
+                if hasattr(self, 'body_pose') and self.body_pose is not None and dataset_idx is not None and dataset_idx >= 0:
+                    posevec6d_post = self.body_pose[dataset_idx].reshape(-1, 6).reshape(-1)  # (138,)
+                else:
+                    if body_pose.shape[-1] == 6:
+                        posevec6d_post = body_pose.reshape(-1, 6).reshape(-1)
+                    else:
+                        posevec6d_post = axis_angle_to_rotation_6d(body_pose.reshape(-1, 3)).reshape(-1)
+
+                # reuse tri_feats computed earlier (canonical features stabilize)
+                deformed_xyz_post, delta_post = self.nonrigid_post.forward_from_parts(
+                    posevec6d_post, deformed_xyz, tri_feats
+                )
+                delta_post = torch.tanh(self.delta_scale_post) * delta_post  # gated
+                # regularizers
+                self.loss_nonrigid_post_l2     = (delta_post ** 2).mean()
+                self.loss_nonrigid_post_smooth = self.nonrigid_post.smoothness_loss(delta_post)
+
+                deformed_xyz = deformed_xyz_post
+            else:
+                delta_post = torch.zeros_like(deformed_xyz)
+                self.loss_nonrigid_post_l2     = torch.tensor(0.0, device=self.device)
+                self.loss_nonrigid_post_smooth = torch.tensor(0.0, device=self.device)
+
+            # ===== Optional cycle: push POST to match (pre→LBS) =====
+            if getattr(self, 'use_cycle', False) and getattr(self, 'use_nonrigid_post', False) and getattr(self, 'use_nonrigid', False):
+                self.loss_nonrigid_cycle = (deformed_from_pre.detach() - deformed_xyz).pow(2).mean()
+            else:
+                self.loss_nonrigid_cycle = torch.tensor(0.0, device=self.device)
+
             lbs_T = lbs_T.squeeze(0)
 
             with torch.no_grad():
@@ -779,6 +892,8 @@ class HUGS_TRIMLP(nn.Module):
             'gt_lbs_weights': gt_lbs_weights,
             'canon_normals': canon_normals,
             'nonrigid_delta': delta,
+            'nonrigid_post_delta': delta_post,
+
         }
 
     def oneupSHdegree(self):
@@ -913,7 +1028,11 @@ class HUGS_TRIMLP(nn.Module):
         # Add nonrigid_deformer parameters only if enabled
         if self.use_nonrigid and hasattr(self, 'nonrigid_deformer'):
             params.append({'params': self.nonrigid_deformer.parameters(), 'lr': cfg.deformation, 'name': 'nonrigid_deformer'})
-        
+        if getattr(self, 'use_nonrigid_post', False) and hasattr(self, 'nonrigid_post'):
+            params.append({'params': self.nonrigid_post.parameters(), 'lr': cfg.deformation, 'name': 'nonrigid_post'})
+        if hasattr(self, 'delta_scale_post'):
+            params.append({'params': [self.delta_scale_post], 'lr': cfg.deformation, 'name': 'delta_scale_post'})
+
         if hasattr(self, 'global_orient') and self.global_orient.requires_grad:
             params.append({'params': self.global_orient, 'lr': cfg.smpl_pose, 'name': 'global_orient'})
         
@@ -929,7 +1048,7 @@ class HUGS_TRIMLP(nn.Module):
         self.non_densify_params_keys = [
             'global_orient', 'body_pose', 'betas', 'transl', 
             'v_embed', 'geometry_dec', 'appearance_dec', 'deform_dec', 'nonrigid_deformer',
-            'frame_emb', 'film_layer',
+            'frame_emb', 'film_layer', 'nonrigid_post', 'delta_scale_post',
         ]
         
         for param in params:

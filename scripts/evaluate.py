@@ -73,15 +73,9 @@ def main(cfg):
     # get trainer
     trainer = GaussianTrainer(cfg)
  
-    # Check if test evaluation is requested
-    if '--test' in extras:
-        logger.info("Running test evaluation...")
-        trainer.validate_test()
-        mode = 'test'
-    else:
-        logger.info("Running validation evaluation...")
-        trainer.validate()
-        mode = 'eval' if cfg.eval else 'train'
+    logger.info("Running validation evaluation...")
+    trainer.validate()
+    mode = 'eval' if cfg.eval else 'train'
                 
     # run animation
     trainer.animate()
@@ -93,7 +87,7 @@ def main(cfg):
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-o", "--output_dir", default=None, help="path to the output directory")
-    parser.add_argument("--checkpoint", default=None, help="specific checkpoint file to load")
+    # parser.add_argument("--checkpoint", default=None, help="specific checkpoint file to load")
     
     args, extras = parser.parse_known_args()
         
