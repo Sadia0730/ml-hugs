@@ -116,7 +116,12 @@ class GaussianTrainer():
                 if not cfg.eval:
                     self.human_gs.initialize()
                     self.human_gs = optimize_init(self.human_gs, num_steps=5000)
-        
+        # Initialize cloth if dataset provides cloth mesh
+        if hasattr(self.train_dataset, "cloth_vertices") and hasattr(self.train_dataset, "cloth_faces"):
+            cloth_vertices = self.train_dataset.cloth_vertices
+            cloth_faces = self.train_dataset.cloth_faces
+            self.human_gs.initialize_cloth(cloth_vertices, cloth_faces)
+
         if cfg.mode in ['scene', 'human_scene']:
             self.scene_gs = SceneGS(
                 sh_degree=cfg.scene.sh_degree,
@@ -189,6 +194,9 @@ class GaussianTrainer():
                 l_lpips_w=l.lpips_w,
                 l_lbs_w=l.lbs_w,
                 l_humansep_w=l.humansep_w,
+                l_cloth_sim_w=getattr(l, "cloth_sim_w", 0.0),
+                l_cloth_arap_w=getattr(l, "cloth_arap_w", 0.0),
+                l_cloth_mask_w=getattr(l, "cloth_mask_w", 0.0),
                 num_patches=l.num_patches,
                 patch_size=l.patch_size,
                 use_patches=l.use_patches,
@@ -231,19 +239,29 @@ class GaussianTrainer():
             
             if hasattr(self.human_gs, 'update_learning_rate'):
                 self.human_gs.update_learning_rate(t_iter)
-        
+            for param_group in self.human_gs.optimizer.param_groups:
+                if param_group.get("name", "") == "cloth_xyz":
+                    lr = self.human_gs.xyz_scheduler_args(t_iter)
+                    param_group["lr"] = lr
+
             rnd_idx = next(rand_idx_iter)
             data = self.train_dataset[rnd_idx]
             
             human_gs_out, scene_gs_out = None, None
             
             if self.human_gs:
-                human_gs_out = self.human_gs.forward(
+                human_pack = self.human_gs.forward(
                     smpl_scale=data['smpl_scale'][None],
                     dataset_idx=rnd_idx,
                     is_train=True,
                     ext_tfs=None,
                 )
+
+                body_out  = human_pack["body"] if isinstance(human_pack, dict) else human_pack
+                cloth_out = human_pack.get("cloth", None) if isinstance(human_pack, dict) else None
+            else:
+                body_out, cloth_out = None, None
+
             
             if self.scene_gs:
                 if t_iter >= self.cfg.scene.opt_start_iter:
@@ -262,22 +280,27 @@ class GaussianTrainer():
                 render_human_separate = False
             
             render_pkg = render_human_scene(
-                data=data, 
-                human_gs_out=human_gs_out, 
-                scene_gs_out=scene_gs_out, 
+                data=data,
+                human_gs_out=body_out,
+                scene_gs_out=scene_gs_out,
                 bg_color=bg_color,
                 human_bg_color=human_bg_color,
                 render_mode=render_mode,
                 render_human_separate=render_human_separate,
+                cloth_gs_out=cloth_out,
             )
+
             
             if self.human_gs:
                 self.human_gs.init_values['edges'] = self.human_gs.edges
-                        
+                if hasattr(self.human_gs, "cloth_gaussians") and "edges" in self.human_gs.cloth_gaussians:
+                    self.human_gs.init_values['cloth_edges'] = self.human_gs.cloth_gaussians["edges"]
+        
             loss, loss_dict, loss_extras = self.loss_fn(
                 data,
                 render_pkg,
-                human_gs_out,
+                body_out,
+                cloth_gs_out=cloth_out, 
                 render_mode=render_mode,
                 human_gs_init_values=self.human_gs.init_values if self.human_gs else None,
                 bg_color=bg_color,
@@ -330,17 +353,31 @@ class GaussianTrainer():
                         )
                         
             if t_iter < self.cfg.human.densify_until_iter and self.cfg.mode in ['human', 'human_scene']:
-                render_pkg['human_viewspace_points'] = render_pkg['viewspace_points'][:human_gs_out['xyz'].shape[0]]
-                render_pkg['human_viewspace_points'].grad = render_pkg['viewspace_points'].grad[:human_gs_out['xyz'].shape[0]]
+                # print("DEBUG render_pkg keys:", render_pkg.keys())
+                # print("DEBUG render_pkg['viewspace_points']:", render_pkg.get('viewspace_points'))
+                # print("DEBUG human_gs_out is None?", human_gs_out is None)
+
+                render_pkg['human_viewspace_points'] = render_pkg['viewspace_points'][:body_out['xyz'].shape[0]]
+                render_pkg['human_viewspace_points'].grad = render_pkg['viewspace_points'].grad[:body_out['xyz'].shape[0]]
                 with torch.no_grad():
                     self.human_densification(
-                        human_gs_out=human_gs_out,
+                        human_gs_out=body_out,
                         visibility_filter=render_pkg['human_visibility_filter'],
                         radii=render_pkg['human_radii'],
                         viewspace_point_tensor=render_pkg['human_viewspace_points'],
                         iteration=t_iter+1,
                     )
-            
+            if hasattr(self.human_gs, "cloth_gaussians") and self.human_gs.cloth_gaussians is not None:
+                with torch.no_grad():
+                    self.human_gs.cloth_densify_and_prune(
+                        cloth_gs_out=cloth_out,
+                        grad_threshold=self.cfg.human.densify_grad_threshold,
+                        min_opacity=self.cfg.human.prune_min_opacity,
+                        extent=self.cfg.human.densify_extent,
+                        max_screen_size=20,
+                        max_n_gs=self.cfg.human.max_n_gaussians,
+        )
+
             if self.human_gs:
                 self.human_gs.optimizer.step()
                 self.human_gs.optimizer.zero_grad(set_to_none=True)
@@ -363,14 +400,15 @@ class GaussianTrainer():
                 if self.scene_gs:
                     self.scene_gs.save_ply(f'{self.cfg.logdir}/meshes/scene_{t_iter:06d}_splat.ply')
                 if self.human_gs:
-                    save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
-
+                    save_ply(body_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                    save_ply(cloth_out, f'{self.cfg.logdir}/meshes/cloth_{t_iter:06d}_splat.ply')
                 if self.cfg.mode in ['human', 'human_scene']:
                     self.render_canonical(t_iter, nframes=self.cfg.human.canon_nframes)
                 
             if t_iter % self.cfg.train.anim_interval == 0 and t_iter > 0 and self.cfg.train.anim_interval > 0:
                 if self.human_gs:
-                    save_ply(human_gs_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                    save_ply(body_out, f'{self.cfg.logdir}/meshes/human_{t_iter:06d}_splat.ply')
+                    save_ply(cloth_out, f'{self.cfg.logdir}/meshes/cloth_{t_iter:06d}_splat.ply')
                 if self.anim_dataset is not None:
                     self.animate(t_iter)
                     
@@ -451,7 +489,7 @@ class GaussianTrainer():
         iter_s = 'final' if iter is None else f'{iter:06d}'
         
         bg_color = torch.zeros(3, dtype=torch.float32, device="cuda")
-        
+
         if self.human_gs:
             self.human_gs.eval()
                 
@@ -461,20 +499,26 @@ class GaussianTrainer():
         metrics = {k: [] for k in metrics}
         
         for idx, data in enumerate(tqdm(self.val_dataset, desc="Validation")):
-            human_gs_out, scene_gs_out = None, None
+            human_pack, scene_gs_out = None, None
             render_mode = self.cfg.mode
             
             if self.human_gs:
-                human_gs_out = self.human_gs.forward(
-                    global_orient=data['global_orient'], 
-                    body_pose=data['body_pose'], 
-                    betas=data['betas'], 
-                    transl=data['transl'], 
+                human_pack = self.human_gs.forward(
+                    global_orient=data['global_orient'],
+                    body_pose=data['body_pose'],
+                    betas=data['betas'],
+                    transl=data['transl'],
                     smpl_scale=data['smpl_scale'][None],
                     dataset_idx=-1,
                     is_train=False,
                     ext_tfs=None,
                 )
+
+                body_out  = human_pack["body"] if isinstance(human_pack, dict) else human_pack
+                cloth_out = human_pack.get("cloth", None) if isinstance(human_pack, dict) else None
+            else:
+                body_out, cloth_out = None, None
+
                 
             if self.scene_gs:
                 if iter is not None:
@@ -486,13 +530,13 @@ class GaussianTrainer():
                     scene_gs_out = self.scene_gs.forward()
                     
             render_pkg = render_human_scene(
-                data=data, 
-                human_gs_out=human_gs_out, 
-                scene_gs_out=scene_gs_out, 
+                data=data,
+                human_gs_out=body_out,
+                scene_gs_out=scene_gs_out,
                 bg_color=bg_color,
                 render_mode=render_mode,
+                cloth_gs_out=cloth_out,   # <<< NEW
             )
-            
             gt_image = data['rgb']
             
             image = render_pkg["render"]
@@ -553,27 +597,31 @@ class GaussianTrainer():
             
             if self.human_gs:
                 ext_tfs = (data['manual_trans'], data['manual_rotmat'], data['manual_scale'])
-                human_gs_out = self.human_gs.forward(
-                    global_orient=data['global_orient'],
-                    body_pose=data['body_pose'],
-                    betas=data['betas'],
-                    transl=data['transl'],
-                    smpl_scale=data['smpl_scale'][None],
-                    dataset_idx=-1,
-                    is_train=False,
-                    ext_tfs=ext_tfs,
-                )
+                if self.human_gs:
+                    human_pack = self.human_gs.forward(
+                        smpl_scale=data['smpl_scale'][None],
+                        is_train=False,
+                        ext_tfs=None,
+                    )
+
+                    body_out  = human_pack["body"] if isinstance(human_pack, dict) else human_pack
+                    cloth_out = human_pack.get("cloth", None) if isinstance(human_pack, dict) else None
+                else:
+                    body_out, cloth_out = None, None
+
             
             if self.scene_gs:
                 scene_gs_out = self.scene_gs.forward()
                     
             render_pkg = render_human_scene(
-                data=data, 
-                human_gs_out=human_gs_out, 
-                scene_gs_out=scene_gs_out, 
+                data=data,
+                human_gs_out=body_out,
+                scene_gs_out=scene_gs_out,
                 bg_color=self.bg_color,
                 render_mode=self.cfg.mode,
+                cloth_gs_out=cloth_out,   # <<< NEW
             )
+
             
             image = render_pkg["render"]
             
@@ -614,13 +662,13 @@ class GaussianTrainer():
         pbar = range(nframes) if is_train_progress else tqdm(range(nframes), desc="Canonical:")
         
         for idx in pbar:
-            human_gs_out, scene_gs_out = None, None
+            human_pack, scene_gs_out = None, None
             
             cam_p = camera_params[idx]
             data = dict(static_smpl_params, **cam_p)
 
             if self.human_gs:
-                human_gs_out = self.human_gs.forward(
+                human_pack = self.human_gs.forward(
                     global_orient=data['global_orient'],
                     body_pose=data['body_pose'],
                     betas=data['betas'],
@@ -630,16 +678,21 @@ class GaussianTrainer():
                     is_train=False,
                     ext_tfs=None,
                 )
-                
+                if isinstance(human_pack, dict):
+                    body_out  = human_pack.get("body", None)
+                    cloth_out = human_pack.get("cloth", None)
+                else:
+                    body_out, cloth_out = human_pack, None    
             if is_train_progress:
                 scale_mod = 0.5
                 render_pkg = render_human_scene(
                     data=data, 
-                    human_gs_out=human_gs_out, 
+                    human_gs_out=body_out, 
                     scene_gs_out=scene_gs_out, 
                     bg_color=self.bg_color,
                     render_mode='human',
                     scaling_modifier=scale_mod,
+                    cloth_gs_out=cloth_out, 
                 )
                 
                 image = render_pkg["render"]
@@ -648,10 +701,11 @@ class GaussianTrainer():
                 
                 render_pkg = render_human_scene(
                     data=data, 
-                    human_gs_out=human_gs_out, 
+                    human_gs_out=body_out, 
                     scene_gs_out=scene_gs_out, 
                     bg_color=self.bg_color,
                     render_mode='human',
+                    cloth_gs_out=cloth_out, 
                 )
                 
                 image = render_pkg["render"]
@@ -661,10 +715,11 @@ class GaussianTrainer():
             else:
                 render_pkg = render_human_scene(
                     data=data, 
-                    human_gs_out=human_gs_out, 
+                    human_gs_out=body_out, 
                     scene_gs_out=scene_gs_out, 
                     bg_color=self.bg_color,
                     render_mode='human',
+                    cloth_gs_out=cloth_out, 
                 )
                 
                 image = render_pkg["render"]
@@ -697,22 +752,22 @@ class GaussianTrainer():
             canon_forward_out = self.human_gs.canon_forward()
         
         pbar = tqdm(range(nframes), desc="Canonical:")
-        if bg_color is 'white':
+        if bg_color == 'white':
             bg_color = torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-        elif bg_color is 'black':
+        elif bg_color == 'black':
             bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
             
             
         imgs = []
         for idx in pbar:
-            human_gs_out, scene_gs_out = None, None
+            human_pack, scene_gs_out = None, None
             
             cam_p = camera_params[idx]
             data = dict(smpl_params, **cam_p)
 
             if self.human_gs:
                 if canon_forward_out is not None:
-                    human_gs_out = self.human_gs.forward_test(
+                    human_pack = self.human_gs.forward_test(
                         canon_forward_out,
                         global_orient=data['global_orient'],
                         body_pose=data['body_pose'],
@@ -724,7 +779,7 @@ class GaussianTrainer():
                         ext_tfs=None,
                     )
                 else:
-                    human_gs_out = self.human_gs.forward(
+                    human_pack = self.human_gs.forward(
                         global_orient=data['global_orient'],
                         body_pose=data['body_pose'],
                         betas=data['betas'],
@@ -734,10 +789,14 @@ class GaussianTrainer():
                         is_train=False,
                         ext_tfs=None,
                     )
+           
+            body_out  = human_pack["body"]
+            cloth_out = human_pack.get("cloth", None)
 
             render_pkg = render_human_scene(
                 data=data, 
-                human_gs_out=human_gs_out, 
+                human_gs_out=body_out, 
+                cloth_gs_out=cloth_out, 
                 scene_gs_out=scene_gs_out, 
                 bg_color=self.bg_color,
                 render_mode='human',

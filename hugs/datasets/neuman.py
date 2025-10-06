@@ -13,7 +13,7 @@ import torch
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-
+import trimesh
 from .neuman_utils import neuman_helper
 from .neuman_utils.geometry import transformations
 from .neuman_utils.cameras.camera_pose import CameraPose
@@ -190,13 +190,55 @@ class NeumanDataset(torch.utils.data.Dataset):
         clean_pcd=False,
     ):
         dataset_path = f"{NEUMAN_PATH}/{seq}"
+        self.cloth_dir = "/home/sadia/snug/tmp/citron" 
         scene = neuman_helper.NeuManReader.read_scene(
             dataset_path,
             tgt_size=None,
             normalize=False,
             smpl_type='optimized'
         )
-        
+
+
+        # Neutral shirt
+        neutral_shirt_path = "assets/meshes/tshirt.obj"
+        if os.path.exists(neutral_shirt_path):
+            shirt_mesh = trimesh.load(neutral_shirt_path, process=False)
+            self.cloth_vertices_shirt = torch.from_numpy(shirt_mesh.vertices).float()
+            self.cloth_faces_shirt = torch.from_numpy(shirt_mesh.faces).long()
+            print(f"[Dataset] Loaded neutral shirt mesh from {neutral_shirt_path}")
+        else:
+            self.cloth_vertices_shirt, self.cloth_faces_shirt = None, None
+
+        # Neutral pants
+        neutral_pants_path = "assets/meshes/pants.obj"
+        if os.path.exists(neutral_pants_path):
+            pants_mesh = trimesh.load(neutral_pants_path, process=False)
+            self.cloth_vertices_pants = torch.from_numpy(pants_mesh.vertices).float()
+            self.cloth_faces_pants = torch.from_numpy(pants_mesh.faces).long()
+            print(f"[Dataset] Loaded neutral pants mesh from {neutral_pants_path}")
+        else:
+            self.cloth_vertices_pants, self.cloth_faces_pants = None, None
+        # After loading shirt and pants
+        cloth_vertices = []
+        cloth_faces = []
+        face_offset = 0
+
+        if self.cloth_vertices_shirt is not None:
+            cloth_vertices.append(self.cloth_vertices_shirt)
+            cloth_faces.append(self.cloth_faces_shirt)
+            face_offset = self.cloth_vertices_shirt.shape[0]
+
+        if self.cloth_vertices_pants is not None:
+            # shift pants faces so they don't overlap with shirt vertices
+            cloth_vertices.append(self.cloth_vertices_pants)
+            cloth_faces.append(self.cloth_faces_pants + face_offset)
+
+        if len(cloth_vertices) > 0:
+            self.cloth_vertices = torch.cat(cloth_vertices, dim=0)
+            self.cloth_faces = torch.cat(cloth_faces, dim=0)
+        else:
+            self.cloth_vertices, self.cloth_faces = None, None
+
         smpl_params_path = f'{dataset_path}/4d_humans/smpl_optimized_aligned_scale.npz'        
         smpl_params = np.load(smpl_params_path)
         smpl_params = {f: smpl_params[f] for f in smpl_params.files}
@@ -361,7 +403,34 @@ class NeumanDataset(torch.utils.data.Dataset):
         full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
         camera_center = world_view_transform.inverse()[3, :3]
         cam_intrinsics = torch.from_numpy(cap.intrinsic_matrix).float()
+        import trimesh
         
+        # Load pants mesh for this frame
+        pants_path = os.path.join(self.cloth_dir, f"{idx:04d}_pants.obj")
+        if os.path.exists(pants_path):
+            pants_mesh = trimesh.load(pants_path, process=False)
+            pants_vertices = torch.from_numpy(pants_mesh.vertices).float()
+            datum["cloth_pants"] = pants_vertices
+
+        # Optional: shirt if you also generated it
+        shirt_path = os.path.join(self.cloth_dir, f"{idx:04d}_tshirt.obj")
+        if os.path.exists(shirt_path):
+            shirt_mesh = trimesh.load(shirt_path, process=False)
+            shirt_vertices = torch.from_numpy(shirt_mesh.vertices).float()
+            datum["cloth_shirt"] = shirt_vertices
+
+        # After loading pants and shirt
+        cloth_vertices = []
+        if "cloth_pants" in datum:
+            cloth_vertices.append(datum["cloth_pants"])
+        if "cloth_shirt" in datum:
+            cloth_vertices.append(datum["cloth_shirt"])
+
+        if len(cloth_vertices) > 0:
+            # Concatenate all garments into one tensor
+            datum["cloth_gt"] = torch.cat(cloth_vertices, dim=0)  # [N, 3]
+
+
         datum.update({
             "fovx": fovx,
             "fovy": fovy,

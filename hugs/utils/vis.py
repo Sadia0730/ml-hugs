@@ -38,18 +38,55 @@ def construct_list_of_attributes():
     return l
 
 
+# @torch.no_grad()
+# def save_ply(human_gs_out, path):
+#     os.makedirs(os.path.dirname(path), exist_ok=True)
+
+#     xyz = human_gs_out['xyz_canon'].cpu().numpy()
+#     normals = np.zeros_like(xyz)
+
+#     f_dc = human_gs_out['shs'][:, :1].transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+#     f_rest = human_gs_out['shs'][:, 1:].transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+#     opacities =  inverse_sigmoid(human_gs_out['opacity']).cpu().numpy()
+#     scale = torch.log(human_gs_out['scales_canon']).cpu().numpy()
+#     rotation = human_gs_out['rotq_canon'].cpu().numpy()
+
+#     dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes()]
+
+#     elements = np.empty(xyz.shape[0], dtype=dtype_full)
+#     attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+#     elements[:] = list(map(tuple, attributes))
+#     el = PlyElement.describe(elements, 'vertex')
+#     PlyData([el]).write(path)
 @torch.no_grad()
-def save_ply(human_gs_out, path):
+def save_ply(gs_out, path):
+    """
+    Save Gaussian Splatting outputs to PLY.
+    Works whether you pass body_out, cloth_out, or original human_gs_out.
+    """
+    if gs_out is None:
+        print(f"[WARN] save_ply: got None, skipping -> {path}")
+        return
+
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
-    xyz = human_gs_out['xyz_canon'].cpu().numpy()
+    # handle canonical vs deformed naming
+    xyz = gs_out.get('xyz_canon', gs_out.get('xyz'))
+    scales = gs_out.get('scales_canon', gs_out.get('scales'))
+    rotq   = gs_out.get('rotq_canon', gs_out.get('rotq'))
+
+    if xyz is None or scales is None or rotq is None:
+        print(f"[WARN] save_ply: missing xyz/scales/rotq in {list(gs_out.keys())}, skipping")
+        return
+
+    xyz = xyz.cpu().numpy()
     normals = np.zeros_like(xyz)
 
-    f_dc = human_gs_out['shs'][:, :1].transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-    f_rest = human_gs_out['shs'][:, 1:].transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-    opacities =  inverse_sigmoid(human_gs_out['opacity']).cpu().numpy()
-    scale = torch.log(human_gs_out['scales_canon']).cpu().numpy()
-    rotation = human_gs_out['rotq_canon'].cpu().numpy()
+    f_dc = gs_out['shs'][:, :1].transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    f_rest = gs_out['shs'][:, 1:].transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
+    opacities = inverse_sigmoid(gs_out['opacity']).cpu().numpy()
+    scale = torch.log(scales).cpu().numpy()
+    rotation = rotq.cpu().numpy()
 
     dtype_full = [(attribute, 'f4') for attribute in construct_list_of_attributes()]
 

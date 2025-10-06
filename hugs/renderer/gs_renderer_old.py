@@ -19,25 +19,15 @@ from hugs.utils.rotations import quaternion_to_matrix
 
 def render_human_scene(
     data, 
-    human_gs_out,        # body (or dict with body+cloth if you pass differently – see note)
+    human_gs_out,
     scene_gs_out,
     bg_color, 
     human_bg_color=None,
     scaling_modifier=1.0, 
     render_mode='human_scene',
     render_human_separate=False,
-    # >>> cloth add
-    cloth_gs_out=None,   # pass HUGS_TRIMLP.forward(... )["cloth"] here if available
 ):
-    """
-    If cloth_gs_out is provided and render_mode is 'human_scene', we do:
-      base = render(body+scene)   # depth blending
-      cloth_rgb, cloth_vis = separate passes
-      final = cloth_rgb * cloth_vis + base * (1 - cloth_vis)
-    Otherwise behaves exactly like before.
-    """
 
-    # --- original body/scene switch ---
     feats = None
     if render_mode == 'human_scene':
         feats = torch.cat([human_gs_out['shs'], scene_gs_out['shs']], dim=0)
@@ -63,7 +53,6 @@ def render_human_scene(
     else:
         raise ValueError(f'Unknown render mode: {render_mode}')
     
-    # --- base render (unchanged path) ---
     render_pkg = render(
         means3D=means3D,
         feats=feats,
@@ -75,8 +64,7 @@ def render_human_scene(
         bg_color=bg_color,
         active_sh_degree=active_sh_degree,
     )
-
-    # --- prepare extras from original code (unchanged) ---
+        
     if render_human_separate and render_mode == 'human_scene':
         render_human_pkg = render(
             means3D=human_gs_out['xyz'],
@@ -108,45 +96,9 @@ def render_human_scene(
     elif render_mode == 'scene':
         render_pkg['scene_visibility_filter'] = render_pkg['visibility_filter']
         render_pkg['scene_radii'] = render_pkg['radii']
-
-    # >>> cloth add: do the 2nd pass and composite
-    if cloth_gs_out is not None and render_mode == 'human_scene':
-        # 1) base image (body+scene) already computed:
-        base_rgb = render_pkg["render"]
-
-        # 2) cloth color (with SH)
-        cloth_rgb, _ = _render_colors_only(
-            means3D=cloth_gs_out["xyz"],
-            feats=cloth_gs_out["shs"],
-            opacity=cloth_gs_out["opacity"],
-            scales=cloth_gs_out["scales"],
-            rotations=cloth_gs_out["rotq"],
-            data=data,
-            scaling_modifier=scaling_modifier,
-            bg_color=torch.zeros(3, device=base_rgb.device),
-            sh_degree=cloth_gs_out["active_sh_degree"],
-        )
-
-        # 3) cloth visibility vs (body+scene) in one pass (depth-aware matte)
-        blockers = {
-            "xyz":   torch.cat([human_gs_out["xyz"], scene_gs_out["xyz"]], dim=0),
-            "opacity":torch.cat([human_gs_out["opacity"], scene_gs_out["opacity"]], dim=0),
-            "scales": torch.cat([human_gs_out["scales"], scene_gs_out["scales"]], dim=0),
-            "rotq":   torch.cat([human_gs_out["rotq"],   scene_gs_out["rotq"]],   dim=0),
-        }
-        cloth_vis = _render_visibility_matte(
-            cloth=cloth_gs_out, blockers=blockers,
-            data=data, scaling_modifier=scaling_modifier, sh_degree=0
-        )  # HxWx1
-
-        # 4) composite (cloth OVER base)
-        comp = cloth_rgb * cloth_vis + base_rgb * (1.0 - cloth_vis)
-        render_pkg["render"] = torch.clamp(comp, 0.0, 1.0)
-        render_pkg["cloth_rgb"] = cloth_rgb
-        render_pkg["cloth_vis"] = cloth_vis
-
+        
     return render_pkg
-
+    
     
 def render(means3D, feats, opacity, scales, rotations, data, scaling_modifier=1.0, bg_color=None, active_sh_degree=0):
     if bg_color is None:
@@ -207,53 +159,3 @@ def render(means3D, feats, opacity, scales, rotations, data, scaling_modifier=1.
         "visibility_filter" : radii > 0,
         "radii": radii,
     }
-def _render_colors_only(means3D, feats, opacity, scales, rotations, data, scaling_modifier, bg_color, sh_degree):
-    """One standard render that returns RGB only."""
-    out = render(
-        means3D=means3D, feats=feats, opacity=opacity, scales=scales, rotations=rotations,
-        data=data, scaling_modifier=scaling_modifier, bg_color=bg_color, active_sh_degree=sh_degree
-    )
-    return out["render"], out
-
-def _render_alpha_only(means3D, opacity, scales, rotations, data, scaling_modifier, sh_degree):
-    """
-    Render with colors_precomp=1 so the output equals the accumulated alpha (coverage).
-    Works with the 3DGS rasterizer because it alpha-composites linearly.
-    """
-    # Make a dummy "colors_precomp" tensor of ones (RGB)
-    ones = torch.ones((means3D.shape[0], 3), dtype=means3D.dtype, device=means3D.device)
-    out = render(
-        means3D=means3D, feats=ones, opacity=opacity, scales=scales, rotations=rotations,
-        data=data, scaling_modifier=scaling_modifier, bg_color=torch.zeros(3, device=means3D.device),
-        active_sh_degree=0  # colors_precomp path ignores SH anyway
-    )
-    # single-channel alpha (use any channel; they’re identical)
-    alpha = out["render"][..., :1]
-    return alpha
-
-def _render_visibility_matte(cloth, blockers, data, scaling_modifier, sh_degree):
-    """
-    Depth-aware visibility of *cloth* in front of (body+scene):
-    - cloth gaussians colored to 1
-    - blockers (body+scene) colored to 0
-    The rasterizer’s alpha compositing + depth resolves which layer is visible.
-    """
-    # concatenate in the order [cloth, blockers] so both sets are in the same pass
-    means3D   = torch.cat([cloth["xyz"], blockers["xyz"]], dim=0)
-    opacity   = torch.cat([cloth["opacity"], blockers["opacity"]], dim=0)
-    scales    = torch.cat([cloth["scales"], blockers["scales"]], dim=0)
-    rotations = torch.cat([cloth["rotq"],  blockers["rotq"]],  dim=0)
-
-    # colors: cloth -> ones, blockers -> zeros
-    cloth_ones   = torch.ones((cloth["xyz"].shape[0], 3), dtype=means3D.dtype, device=means3D.device)
-    blockers_zero= torch.zeros((blockers["xyz"].shape[0], 3), dtype=means3D.dtype, device=means3D.device)
-    feats = torch.cat([cloth_ones, blockers_zero], dim=0)  # use colors_precomp route
-
-    out = render(
-        means3D=means3D, feats=feats, opacity=opacity, scales=scales, rotations=rotations,
-        data=data, scaling_modifier=scaling_modifier,
-        bg_color=torch.zeros(3, device=means3D.device), active_sh_degree=0
-    )
-    # matte of visible cloth after depth with blockers
-    cloth_vis = out["render"][..., :1]
-    return cloth_vis

@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from hugs.utils.sampler import PatchSampler
 
 from .utils import l1_loss, ssim
+from .utils import simulation_loss, arap_loss, mask_loss
 
 
 class HumanSceneLoss(nn.Module):
@@ -21,6 +22,9 @@ class HumanSceneLoss(nn.Module):
         l_lpips_w=0.0,
         l_lbs_w=0.0,
         l_humansep_w=0.0,
+        l_cloth_sim_w=0.0,
+        l_cloth_arap_w=0.0,
+        l_cloth_mask_w=0.0,
         num_patches=4,
         patch_size=32,
         use_patches=True,
@@ -33,6 +37,9 @@ class HumanSceneLoss(nn.Module):
         self.l_lpips_w = l_lpips_w
         self.l_lbs_w = l_lbs_w
         self.l_humansep_w = l_humansep_w
+        self.l_cloth_sim_w = l_cloth_sim_w
+        self.l_cloth_arap_w = l_cloth_arap_w
+        self.l_cloth_mask_w = l_cloth_mask_w
         self.use_patches = use_patches
         
         self.bg_color = bg_color
@@ -47,7 +54,8 @@ class HumanSceneLoss(nn.Module):
         self, 
         data, 
         render_pkg,
-        human_gs_out,
+        body_out,                 # keep body separate
+        cloth_gs_out,  
         render_mode, 
         human_gs_init_values=None,
         bg_color=None,
@@ -144,17 +152,39 @@ class HumanSceneLoss(nn.Module):
             loss_dict['lpips_patch_human'] = self.l_lpips_w * loss_lpips_human * self.l_humansep_w
 
 
-        if self.l_lbs_w > 0.0 and human_gs_out['lbs_weights'] is not None and not render_mode == "scene":
-            if 'gt_lbs_weights' in human_gs_out.keys():
-                loss_lbs = F.mse_loss(
-                    human_gs_out['lbs_weights'], 
-                    human_gs_out['gt_lbs_weights'].detach()).mean()
-            else:
-                loss_lbs = F.mse_loss(
-                    human_gs_out['lbs_weights'], 
-                    human_gs_init_values['lbs_weights']).mean()
-            loss_dict['lbs'] = self.l_lbs_w * loss_lbs
-        
+        if self.l_lbs_w > 0.0 and body_out is not None and render_mode != "scene" :
+            if "lbs_weights" in body_out and body_out["lbs_weights"] is not None:
+                if "gt_lbs_weights" in body_out:
+                    loss_lbs = F.mse_loss(
+                        body_out["lbs_weights"], 
+                        body_out["gt_lbs_weights"].detach()
+                    ).mean()
+                else:
+                    loss_lbs = F.mse_loss(
+                        body_out["lbs_weights"], 
+                        human_gs_init_values["lbs_weights"]
+                    ).mean()
+                loss_dict["lbs"] = self.l_lbs_w * loss_lbs
+
+        # === Cloth Losses ===
+        if cloth_gs_out is not None:
+            cloth_pred = cloth_gs_out["xyz"]      # predicted deformed cloth verts
+            cloth_gt   = data.get("cloth_gt", None)        # GT cloth mesh verts from SNUG
+            cloth_edges = human_gs_init_values.get("cloth_edges", None) if human_gs_init_values else None
+
+            if cloth_pred is not None and cloth_gt is not None:
+                if self.l_cloth_sim_w > 0:
+                    l_sim = simulation_loss(cloth_pred, cloth_gt)
+                    loss_dict["cloth_sim"] = self.l_cloth_sim_w * l_sim
+
+                if self.l_cloth_arap_w > 0 and cloth_edges is not None:
+                    l_arap = arap_loss(cloth_pred, cloth_edges)
+                    loss_dict["cloth_arap"] = self.l_cloth_arap_w * l_arap
+
+                if self.l_cloth_mask_w > 0 and "render_mask" in render_pkg:
+                    l_mask = mask_loss(render_pkg["render_mask"], data["mask"])
+                    loss_dict["cloth_mask"] = self.l_cloth_mask_w * l_mask
+
         loss = 0.0
         for k, v in loss_dict.items():
             loss += v

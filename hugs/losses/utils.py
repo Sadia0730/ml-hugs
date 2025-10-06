@@ -56,7 +56,21 @@ def l1_loss(network_output, gt, mask=None):
         return torch.abs((network_output - gt)).sum() / mask.sum()
     else:
         return torch.abs((network_output - gt)).mean()
+        
+def mask_loss(pred_mask, gt_mask):
+    return ((pred_mask - gt_mask) ** 2).mean()
 
+def arap_loss(verts, edges):
+    v0, v1 = edges[:, 0], edges[:, 1]
+    diff = verts[v0] - verts[v1]
+    return (diff.norm(dim=-1)).var()  # smoothness
+
+def geman_mcclure(x, c=0.03):
+    return (x**2) / (x**2 + c**2)
+
+def simulation_loss(pred_cloth, gt_cloth):
+    diff = (pred_cloth - gt_cloth).pow(2).sum(-1)
+    return geman_mcclure(diff).mean()
 
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
