@@ -188,9 +188,15 @@ class NeumanDataset(torch.utils.data.Dataset):
         num_bg_points=204_800,
         bg_sphere_dist=5.0,
         clean_pcd=False,
+        cloth_upper='tshirt',
+        cloth_lower='pants',
     ):
         dataset_path = f"{NEUMAN_PATH}/{seq}"
-        self.cloth_dir = "/home/sadia/snug/tmp/citron" 
+        # Cloth directory is always assets/snug/{seq}
+        self.cloth_dir = f"assets/snug/{seq}"
+        self.cloth_upper = cloth_upper  # Upper garment type
+        self.cloth_lower = cloth_lower  # Lower garment type
+        print(f"[Dataset] Cloth config: upper='{cloth_upper}', lower='{cloth_lower}', dir='{self.cloth_dir}'")
         scene = neuman_helper.NeuManReader.read_scene(
             dataset_path,
             tgt_size=None,
@@ -199,24 +205,26 @@ class NeumanDataset(torch.utils.data.Dataset):
         )
 
 
-        # Neutral shirt
-        neutral_shirt_path = "assets/meshes/tshirt.obj"
-        if os.path.exists(neutral_shirt_path):
-            shirt_mesh = trimesh.load(neutral_shirt_path, process=False)
-            self.cloth_vertices_shirt = torch.from_numpy(shirt_mesh.vertices).float()
-            self.cloth_faces_shirt = torch.from_numpy(shirt_mesh.faces).long()
-            print(f"[Dataset] Loaded neutral shirt mesh from {neutral_shirt_path}")
+        # Neutral upper garment - use configurable cloth type
+        neutral_upper_path = f"assets/meshes/{cloth_upper}.obj"
+        if os.path.exists(neutral_upper_path):
+            upper_mesh = trimesh.load(neutral_upper_path, process=False)
+            self.cloth_vertices_shirt = torch.from_numpy(upper_mesh.vertices).float()
+            self.cloth_faces_shirt = torch.from_numpy(upper_mesh.faces).long()
+            print(f"[Dataset] Loaded neutral upper garment mesh from {neutral_upper_path} ({upper_mesh.vertices.shape[0]} vertices)")
         else:
+            print(f"[Dataset] WARNING: Neutral upper garment not found: {neutral_upper_path}")
             self.cloth_vertices_shirt, self.cloth_faces_shirt = None, None
 
-        # Neutral pants
-        neutral_pants_path = "assets/meshes/pants.obj"
-        if os.path.exists(neutral_pants_path):
-            pants_mesh = trimesh.load(neutral_pants_path, process=False)
-            self.cloth_vertices_pants = torch.from_numpy(pants_mesh.vertices).float()
-            self.cloth_faces_pants = torch.from_numpy(pants_mesh.faces).long()
-            print(f"[Dataset] Loaded neutral pants mesh from {neutral_pants_path}")
+        # Neutral lower garment - use configurable cloth type
+        neutral_lower_path = f"assets/meshes/{cloth_lower}.obj"
+        if os.path.exists(neutral_lower_path):
+            lower_mesh = trimesh.load(neutral_lower_path, process=False)
+            self.cloth_vertices_pants = torch.from_numpy(lower_mesh.vertices).float()
+            self.cloth_faces_pants = torch.from_numpy(lower_mesh.faces).long()
+            print(f"[Dataset] Loaded neutral lower garment mesh from {neutral_lower_path} ({lower_mesh.vertices.shape[0]} vertices)")
         else:
+            print(f"[Dataset] WARNING: Neutral lower garment not found: {neutral_lower_path}")
             self.cloth_vertices_pants, self.cloth_faces_pants = None, None
         # After loading shirt and pants
         cloth_vertices = []
@@ -405,19 +413,19 @@ class NeumanDataset(torch.utils.data.Dataset):
         cam_intrinsics = torch.from_numpy(cap.intrinsic_matrix).float()
         import trimesh
         
-        # Load pants mesh for this frame
-        pants_path = os.path.join(self.cloth_dir, f"{idx:04d}_pants.obj")
-        if os.path.exists(pants_path):
-            pants_mesh = trimesh.load(pants_path, process=False)
-            pants_vertices = torch.from_numpy(pants_mesh.vertices).float()
-            datum["cloth_pants"] = pants_vertices
+        # Load lower garment (configurable: pants, shorts, skirt, etc.)
+        lower_path = os.path.join(self.cloth_dir, f"{idx:04d}_{self.cloth_lower}.obj")
+        if os.path.exists(lower_path):
+            lower_mesh = trimesh.load(lower_path, process=False)
+            lower_vertices = torch.from_numpy(lower_mesh.vertices).float()
+            datum["cloth_pants"] = lower_vertices
 
-        # Optional: shirt if you also generated it
-        shirt_path = os.path.join(self.cloth_dir, f"{idx:04d}_tshirt.obj")
-        if os.path.exists(shirt_path):
-            shirt_mesh = trimesh.load(shirt_path, process=False)
-            shirt_vertices = torch.from_numpy(shirt_mesh.vertices).float()
-            datum["cloth_shirt"] = shirt_vertices
+        # Load upper garment (configurable: tshirt, top, shirt, hoodie, etc.)
+        upper_path = os.path.join(self.cloth_dir, f"{idx:04d}_{self.cloth_upper}.obj")
+        if os.path.exists(upper_path):
+            upper_mesh = trimesh.load(upper_path, process=False)
+            upper_vertices = torch.from_numpy(upper_mesh.vertices).float()
+            datum["cloth_shirt"] = upper_vertices
 
         # After loading pants and shirt
         cloth_vertices = []
@@ -429,6 +437,9 @@ class NeumanDataset(torch.utils.data.Dataset):
         if len(cloth_vertices) > 0:
             # Concatenate all garments into one tensor
             datum["cloth_gt"] = torch.cat(cloth_vertices, dim=0)  # [N, 3]
+        else:
+            # No cloth GT available - cloth training will use only regularization losses
+            pass
 
 
         datum.update({

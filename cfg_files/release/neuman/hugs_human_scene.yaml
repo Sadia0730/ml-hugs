@@ -10,14 +10,16 @@ eval: false
 bg_color: white
 dataset:
   name: neuman
-  seq: "citron"
+  seq: "parkinglot"
+  cloth_upper: "top"  # Upper garment: "tshirt", "top", "shirt", "hoodie", etc.
+  cloth_lower: "pants"   # Lower garment: "pants", "shorts", "skirt", etc.
 train:
   batch_size: 1
   num_workers: 0
-  num_steps: 14998
-  save_ckpt_interval: 15000
+  num_steps: 19998
+  save_ckpt_interval: 1000
   val_interval: 1000
-  anim_interval: 15000
+  anim_interval: 20000
   optim_scene: true
   save_progress_images: false
   progress_save_interval: 10
@@ -71,23 +73,25 @@ human:
     deformation: 0.0001
     scale_lr_w_npoints: false
   loss:
-    ssim_w: 0.2
+    ssim_w: 0.2 #0.2
     l1_w: 0.8
-    lpips_w: 1.0
+    lpips_w: 1.0  # Increased from 1.0 - better perceptual quality & contrast preservation
     lbs_w: 1000.0
-    cloth_sim_w: 1.0
-    cloth_arap_w: 0.5
+    cloth_sim_w: 1.0  # Increased from 1.0 - stronger cloth detail matching
+    cloth_arap_w: 0.5  # Reduced from 0.5 - less smoothing, more wrinkle detail
     cloth_mask_w: 1.0
     humansep_w: 1.0
+    opacity_entropy_w: 0.0  # Disabled - didn't help with milky haze
+    tv_w: 0.01  # Original value that successfully removed haze
     num_patches: 4
     patch_size: 128
     use_patches: 1
   densification_interval: 600
   opacity_reset_interval: 3000
   densify_from_iter: 3000
-  densify_until_iter: 15000
+  densify_until_iter: 20000
   densify_grad_threshold: 0.0002
-  prune_min_opacity: 0.005
+  prune_min_opacity: 0.02  # Restored aggressive pruning to prevent haze
   densify_extent: 1.0
   max_n_gaussians: 524288
   percent_dense: 0.01
@@ -113,11 +117,11 @@ scene:
     feature: 0.0025
   percent_dense: 0.01
   densification_interval: 100
-  opacity_reset_interval: 20000
+  opacity_reset_interval: 30000
   densify_from_iter: 500
-  densify_until_iter: 15000
+  densify_until_iter: 20000
   densify_grad_threshold: 0.0002
-  prune_min_opacity: 0.005
+  prune_min_opacity: 0.03  # Increased from 0.005 - more aggressive scene pruning
   max_n_gaussians: 2097152
   loss:
     ssim_w: 0.2

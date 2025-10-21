@@ -14,6 +14,7 @@ from PIL import Image
 from tqdm import tqdm
 from lpips import LPIPS
 from loguru import logger
+from scipy import linalg
 
 from hugs.datasets.utils import (
     get_rotating_camera,
@@ -34,6 +35,110 @@ from hugs.utils.image import psnr, save_image
 from hugs.utils.general import RandomIndexIterator, load_human_ckpt, save_images, create_video
 
 
+class FIDCalculator:
+    """Calculate Fréchet Inception Distance (FID) between real and generated images."""
+    
+    def __init__(self, device='cuda'):
+        from torchvision.models import inception_v3, Inception_V3_Weights
+        
+        # Load pretrained InceptionV3
+        self.model = inception_v3(weights=Inception_V3_Weights.DEFAULT, transform_input=False)
+        self.model.fc = torch.nn.Identity()  # Remove classification head
+        self.model = self.model.to(device).eval()
+        self.device = device
+        
+        # Disable gradients
+        for param in self.model.parameters():
+            param.requires_grad = False
+    
+    @torch.no_grad()
+    def extract_features(self, images):
+        """
+        Extract Inception features from images.
+        Args:
+            images: Tensor of shape [N, 3, H, W] in range [0, 1]
+        Returns:
+            features: Tensor of shape [N, 2048]
+        """
+        # Resize to 299x299 (InceptionV3 input size)
+        if images.shape[-2:] != (299, 299):
+            images = torch.nn.functional.interpolate(
+                images, size=(299, 299), mode='bilinear', align_corners=False
+            )
+        
+        # Normalize to [-1, 1] (ImageNet preprocessing)
+        images = images * 2 - 1
+        
+        # Extract features
+        features = self.model(images)
+        return features
+    
+    def calculate_fid(self, real_images, fake_images):
+        """
+        Calculate FID between real and generated images.
+        Args:
+            real_images: List of tensors [3, H, W] in range [0, 1]
+            fake_images: List of tensors [3, H, W] in range [0, 1]
+        Returns:
+            fid_score: float
+        """
+        # Extract features
+        real_feats = []
+        fake_feats = []
+        
+        # Process in batches to avoid OOM
+        batch_size = 8
+        for i in range(0, len(real_images), batch_size):
+            batch_real = torch.stack(real_images[i:i+batch_size]).to(self.device)
+            batch_fake = torch.stack(fake_images[i:i+batch_size]).to(self.device)
+            
+            real_feats.append(self.extract_features(batch_real).cpu())
+            fake_feats.append(self.extract_features(batch_fake).cpu())
+        
+        real_feats = torch.cat(real_feats, dim=0).numpy()
+        fake_feats = torch.cat(fake_feats, dim=0).numpy()
+        
+        # Calculate statistics
+        mu_real = np.mean(real_feats, axis=0)
+        sigma_real = np.cov(real_feats, rowvar=False)
+        
+        mu_fake = np.mean(fake_feats, axis=0)
+        sigma_fake = np.cov(fake_feats, rowvar=False)
+        
+        # Calculate FID
+        fid = self._calculate_frechet_distance(mu_real, sigma_real, mu_fake, sigma_fake)
+        return fid
+    
+    @staticmethod
+    def _calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
+        """Calculate Fréchet distance between two Gaussians."""
+        mu1 = np.atleast_1d(mu1)
+        mu2 = np.atleast_1d(mu2)
+        
+        sigma1 = np.atleast_2d(sigma1)
+        sigma2 = np.atleast_2d(sigma2)
+        
+        diff = mu1 - mu2
+        
+        # Product might be almost singular
+        covmean, _ = linalg.sqrtm(sigma1.dot(sigma2), disp=False)
+        if not np.isfinite(covmean).all():
+            logger.warning(f"FID calculation produced singular product; adding {eps} to diagonal of cov estimates")
+            offset = np.eye(sigma1.shape[0]) * eps
+            covmean = linalg.sqrtm((sigma1 + offset).dot(sigma2 + offset))
+        
+        # Numerical error might give slight imaginary component
+        if np.iscomplexobj(covmean):
+            if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
+                m = np.max(np.abs(covmean.imag))
+                raise ValueError(f"Imaginary component {m}")
+            covmean = covmean.real
+        
+        tr_covmean = np.trace(covmean)
+        
+        return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean
+
+
 def get_train_dataset(cfg):
     if cfg.dataset.name == 'neuman':
         logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-train')
@@ -44,6 +149,8 @@ def get_train_dataset(cfg):
             num_bg_points=cfg.scene.num_bg_points,
             bg_sphere_dist=cfg.scene.bg_sphere_dist,
             clean_pcd=cfg.scene.clean_pcd,
+            cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
+            cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
         )
     
     return dataset
@@ -52,7 +159,11 @@ def get_train_dataset(cfg):
 def get_val_dataset(cfg):
     if cfg.dataset.name == 'neuman':
         logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-val')
-        dataset = NeumanDataset(cfg.dataset.seq, 'val', cfg.mode)
+        dataset = NeumanDataset(
+            cfg.dataset.seq, 'val', cfg.mode,
+            cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
+            cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
+        )
    
     return dataset
 
@@ -60,7 +171,11 @@ def get_val_dataset(cfg):
 def get_anim_dataset(cfg):
     if cfg.dataset.name == 'neuman':
         logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-anim')
-        dataset = NeumanDataset(cfg.dataset.seq, 'anim', cfg.mode)
+        dataset = NeumanDataset(
+            cfg.dataset.seq, 'anim', cfg.mode,
+            cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
+            cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
+        )
     elif cfg.dataset.name == 'zju':
         dataset = None
         
@@ -79,6 +194,7 @@ class GaussianTrainer():
         
         self.eval_metrics = {}
         self.lpips = LPIPS(net="alex", pretrained=True).to('cuda')
+        self.fid_calculator = FIDCalculator(device='cuda')
         # get models
         self.human_gs, self.scene_gs = None, None
         
@@ -197,6 +313,8 @@ class GaussianTrainer():
                 l_cloth_sim_w=getattr(l, "cloth_sim_w", 0.0),
                 l_cloth_arap_w=getattr(l, "cloth_arap_w", 0.0),
                 l_cloth_mask_w=getattr(l, "cloth_mask_w", 0.0),
+                l_opacity_entropy_w=getattr(l, "opacity_entropy_w", 0.0),
+                l_tv_w=getattr(l, "tv_w", 0.0),
                 num_patches=l.num_patches,
                 patch_size=l.patch_size,
                 use_patches=l.use_patches,
@@ -247,7 +365,7 @@ class GaussianTrainer():
             rnd_idx = next(rand_idx_iter)
             data = self.train_dataset[rnd_idx]
             
-            human_gs_out, scene_gs_out = None, None
+            human_pack, scene_gs_out = None, None
             
             if self.human_gs:
                 human_pack = self.human_gs.forward(
@@ -268,6 +386,9 @@ class GaussianTrainer():
                     scene_gs_out = self.scene_gs.forward()
                 else:
                     render_mode = 'human'
+            else:
+                scene_gs_out = None
+                render_mode = 'human'
             
             bg_color = torch.rand(3, dtype=torch.float32, device="cuda")
             
@@ -335,6 +456,118 @@ class GaussianTrainer():
                     log_gt_img = (gt_img.cpu().numpy().transpose(1, 2, 0) * 255).astype(np.uint8)
                     log_img = np.concatenate([log_gt_img, log_pred_img], axis=1)
                     save_images(log_img, f'{self.cfg.logdir}/train/{t_iter:06d}.png')
+                    
+                    # === Save Body and Cloth Meshes After LBS Deformation ===
+                    logger.info(f"Debug - cloth_out is None: {cloth_out is None}")
+                    logger.info(f"Debug - cloth_gt in data: {'cloth_gt' in data}")
+                    
+                    # Save body mesh after LBS deformation
+                    if 'body' in human_pack and human_pack['body'] is not None:
+                        body_out = human_pack['body']
+                        if 'xyz' in body_out:
+                            body_deformed_ply_path = f'{self.cfg.logdir}/meshes/body_deformed_{t_iter:06d}.ply'
+                            save_ply(body_out, body_deformed_ply_path)
+                            logger.info(f"Saved body after LBS deformation to {body_deformed_ply_path}")
+                            
+                            # Also save canonical body for comparison
+                            if 'xyz_canon' in body_out:
+                                body_canon_ply_path = f'{self.cfg.logdir}/meshes/body_canon_{t_iter:06d}.ply'
+                                save_ply({'xyz': body_out['xyz_canon']}, body_canon_ply_path)
+                                logger.info(f"Saved canonical body to {body_canon_ply_path}")
+                                
+                                # Check body deformation magnitude
+                                body_deformation = torch.norm(body_out['xyz'] - body_out['xyz_canon'], dim=1).mean()
+                                logger.info(f"Body deformation magnitude: {body_deformation:.6f}")
+                    
+                    # Save cloth mesh after LBS deformation
+                    if cloth_out is not None:
+                        logger.info(f"Debug - cloth_out keys: {list(cloth_out.keys())}")
+                        if 'xyz' in cloth_out:
+                            # Save predicted deformed cloth
+                            cloth_pred_xyz = cloth_out["xyz"].detach().cpu().numpy()
+                            cloth_pred_ply_path = f'{self.cfg.logdir}/meshes/cloth_deformed_{t_iter:06d}.ply'
+                            save_ply(cloth_out, cloth_pred_ply_path)
+                            logger.info(f"Saved cloth after LBS deformation to {cloth_pred_ply_path}")
+                            
+                            # Also save canonical cloth for comparison
+                            if 'xyz_canon' in cloth_out:
+                                cloth_canon_xyz = cloth_out["xyz_canon"].detach().cpu().numpy()
+                                cloth_canon_ply_path = f'{self.cfg.logdir}/meshes/cloth_canon_{t_iter:06d}.ply'
+                                save_ply({'xyz': torch.from_numpy(cloth_canon_xyz)}, cloth_canon_ply_path)
+                                logger.info(f"Saved canonical cloth to {cloth_canon_ply_path}")
+                                
+                                # Check if deformation is actually happening
+                                deformation_magnitude = np.linalg.norm(cloth_pred_xyz - cloth_canon_xyz, axis=1).mean()
+                                logger.info(f"Cloth deformation magnitude: {deformation_magnitude:.6f}")
+                                if deformation_magnitude < 1e-6:
+                                    logger.warning("⚠️ Cloth deformation is negligible - LBS might not be working!")
+                                
+                                # === MESH ANALYSIS ===
+                                logger.info("=== CLOTH MESH ANALYSIS ===")
+                                logger.info(f"Predicted cloth: {cloth_pred_xyz.shape[0]} vertices, bounds: [{cloth_pred_xyz.min(axis=0)}, {cloth_pred_xyz.max(axis=0)}]")
+                                logger.info(f"Canonical cloth: {cloth_canon_xyz.shape[0]} vertices, bounds: [{cloth_canon_xyz.min(axis=0)}, {cloth_canon_xyz.max(axis=0)}]")
+                                
+                                # Calculate mesh statistics
+                                pred_center = cloth_pred_xyz.mean(axis=0)
+                                canon_center = cloth_canon_xyz.mean(axis=0)
+                                pred_scale = np.linalg.norm(cloth_pred_xyz - pred_center, axis=1).max()
+                                canon_scale = np.linalg.norm(cloth_canon_xyz - canon_center, axis=1).max()
+                                
+                                logger.info(f"Pred center: {pred_center}, scale: {pred_scale:.4f}")
+                                logger.info(f"Canon center: {canon_center}, scale: {canon_scale:.4f}")
+                                logger.info(f"Center shift: {np.linalg.norm(pred_center - canon_center):.4f}")
+                                logger.info(f"Scale ratio: {pred_scale/canon_scale:.4f}")
+                        
+                        # Save GT deformed cloth if available
+                        if 'cloth_gt' in data:
+                            cloth_gt_xyz = data['cloth_gt'].detach().cpu().numpy()
+                            cloth_gt_ply_path = f'{self.cfg.logdir}/meshes/cloth_gt_ply_{t_iter:06d}.ply'
+                            save_ply({'xyz': torch.from_numpy(cloth_gt_xyz)}, cloth_gt_ply_path)
+                            logger.info(f"Saved GT cloth to {cloth_gt_ply_path}")
+                            
+                            # === GT MESH ANALYSIS ===
+                            logger.info("=== GT CLOTH MESH ANALYSIS ===")
+                            logger.info(f"GT cloth: {cloth_gt_xyz.shape[0]} vertices, bounds: [{cloth_gt_xyz.min(axis=0)}, {cloth_gt_xyz.max(axis=0)}]")
+                            
+                            # Calculate GT mesh statistics
+                            gt_center = cloth_gt_xyz.mean(axis=0)
+                            gt_scale = np.linalg.norm(cloth_gt_xyz - gt_center, axis=1).max()
+                            logger.info(f"GT center: {gt_center}, scale: {gt_scale:.4f}")
+                            
+                            # Compare with predicted mesh
+                            if 'xyz' in cloth_out:
+                                pred_center = cloth_pred_xyz.mean(axis=0)
+                                pred_scale = np.linalg.norm(cloth_pred_xyz - pred_center, axis=1).max()
+                                
+                                logger.info("=== PRED vs GT COMPARISON ===")
+                                logger.info(f"Vertex count: Pred={cloth_pred_xyz.shape[0]}, GT={cloth_gt_xyz.shape[0]}")
+                                logger.info(f"Center diff: {np.linalg.norm(pred_center - gt_center):.4f}")
+                                logger.info(f"Scale ratio: {pred_scale/gt_scale:.4f}")
+                                
+                                # Check if meshes are in same coordinate frame
+                                center_aligned_pred = cloth_pred_xyz - pred_center + gt_center
+                                scale_aligned_pred = center_aligned_pred * (gt_scale / pred_scale)
+                                
+                                # Quick Chamfer distance (unnormalized)
+                                pred_tensor = torch.from_numpy(scale_aligned_pred).float()
+                                gt_tensor = torch.from_numpy(cloth_gt_xyz).float()
+                                chamfer_raw = torch.cdist(pred_tensor, gt_tensor).min(dim=1)[0].mean().item()
+                                logger.info(f"Raw Chamfer distance (after alignment): {chamfer_raw:.6f}")
+                                
+                                # Determine mesh relationship
+                                if abs(pred_scale/gt_scale - 1.0) < 0.1 and np.linalg.norm(pred_center - gt_center) < 0.1:
+                                    logger.info("✅ Meshes appear to be in same coordinate frame")
+                                else:
+                                    logger.info("⚠️ Meshes need coordinate alignment")
+                                
+                                if abs(cloth_pred_xyz.shape[0] / cloth_gt_xyz.shape[0] - 1.0) < 0.1:
+                                    logger.info("✅ Similar vertex counts - can use vertex-wise loss")
+                                else:
+                                    logger.info("⚠️ Different vertex counts - need Chamfer/point-to-surface loss")
+                        else:
+                            logger.warning("cloth_gt not found in data")
+                    else:
+                        logger.warning("cloth_out is None - cloth not being generated")
             
             if t_iter >= self.cfg.scene.opt_start_iter:
                 if (t_iter - self.cfg.scene.opt_start_iter) < self.cfg.scene.densify_until_iter and self.cfg.mode in ['scene', 'human_scene']:
@@ -353,10 +586,6 @@ class GaussianTrainer():
                         )
                         
             if t_iter < self.cfg.human.densify_until_iter and self.cfg.mode in ['human', 'human_scene']:
-                # print("DEBUG render_pkg keys:", render_pkg.keys())
-                # print("DEBUG render_pkg['viewspace_points']:", render_pkg.get('viewspace_points'))
-                # print("DEBUG human_gs_out is None?", human_gs_out is None)
-
                 render_pkg['human_viewspace_points'] = render_pkg['viewspace_points'][:body_out['xyz'].shape[0]]
                 render_pkg['human_viewspace_points'].grad = render_pkg['viewspace_points'].grad[:body_out['xyz'].shape[0]]
                 with torch.no_grad():
@@ -367,16 +596,39 @@ class GaussianTrainer():
                         viewspace_point_tensor=render_pkg['human_viewspace_points'],
                         iteration=t_iter+1,
                     )
-            if hasattr(self.human_gs, "cloth_gaussians") and self.human_gs.cloth_gaussians is not None:
-                with torch.no_grad():
-                    self.human_gs.cloth_densify_and_prune(
-                        cloth_gs_out=cloth_out,
-                        grad_threshold=self.cfg.human.densify_grad_threshold,
-                        min_opacity=self.cfg.human.prune_min_opacity,
-                        extent=self.cfg.human.densify_extent,
-                        max_screen_size=20,
-                        max_n_gs=self.cfg.human.max_n_gaussians,
-        )
+            # === CLOTH DENSIFICATION (moved before optimizer step) ===
+            if hasattr(self.human_gs, "cloth_gaussians") and self.human_gs.cloth_gaussians is not None and cloth_out is not None:
+                # Extract cloth viewspace points (if rendered separately with gradients)
+                if 'cloth_visibility_filter' in render_pkg and 'cloth_radii' in render_pkg:
+                    # Accumulate cloth radii stats
+                    self.human_gs.cloth_max_radii2D[render_pkg['cloth_visibility_filter']] = torch.max(
+                        self.human_gs.cloth_max_radii2D[render_pkg['cloth_visibility_filter']],
+                        render_pkg['cloth_radii'][render_pkg['cloth_visibility_filter']]
+                    )
+                    
+                    # Accumulate cloth viewspace gradients
+                    if 'cloth_viewspace_points' in render_pkg and render_pkg['cloth_viewspace_points'].grad is not None:
+                        self.human_gs.add_cloth_densification_stats(
+                            render_pkg['cloth_viewspace_points'],
+                            render_pkg['cloth_visibility_filter']
+                        )
+                    
+                # Densify periodically, not every iteration
+                if t_iter > self.cfg.human.densify_from_iter and t_iter % self.cfg.human.densification_interval == 0:
+                    try:
+                        with torch.no_grad():  # Ensure no gradients during densification
+                            self.human_gs.cloth_densify_and_prune(
+                                cloth_gs_out=cloth_out,
+                                grad_threshold=self.cfg.human.densify_grad_threshold,
+                                min_opacity=self.cfg.human.prune_min_opacity,
+                                extent=self.cfg.human.densify_extent,
+                                max_screen_size=20,
+                                max_n_gs=self.cfg.human.max_n_gaussians,
+                            )
+                            logger.info(f"[Iter {t_iter}] Cloth densification completed successfully")
+                    except Exception as e:
+                        logger.error(f"[Iter {t_iter}] Cloth densification failed: {e}")
+                        # Continue training without densification for this iteration
 
             if self.human_gs:
                 self.human_gs.optimizer.step()
@@ -387,9 +639,9 @@ class GaussianTrainer():
                     self.scene_gs.optimizer.step()
                     self.scene_gs.optimizer.zero_grad(set_to_none=True)
                 
-            # save checkpoint
-            if (t_iter % self.cfg.train.save_ckpt_interval == 0 and t_iter > 0) or \
-                (t_iter == self.cfg.train.num_steps and t_iter > 0):
+            # save checkpoint Save every 1000 iters from 14000 onwards, OR at final iteration
+            if ((t_iter >= 14000 and t_iter % self.cfg.train.save_ckpt_interval == 0) or \
+                (t_iter == self.cfg.train.num_steps and t_iter > 0)):
                 self.save_ckpt(t_iter)
 
             # run validation
@@ -498,6 +750,12 @@ class GaussianTrainer():
         metrics = dict.fromkeys(['_'.join(x) for x in itertools.product(methods, metrics)])
         metrics = {k: [] for k in metrics}
         
+        # For FID calculation
+        real_images_full = []
+        fake_images_full = []
+        real_images_human = []
+        fake_images_human = []
+        
         for idx, data in enumerate(tqdm(self.val_dataset, desc="Validation")):
             human_pack, scene_gs_out = None, None
             render_mode = self.cfg.mode
@@ -548,6 +806,10 @@ class GaussianTrainer():
             metrics['hugs_ssim'].append(ssim(image, gt_image).mean().double())
             metrics['hugs_lpips'].append(self.lpips(image.clip(max=1), gt_image).mean().double())
             
+            # Collect images for FID calculation
+            real_images_full.append(gt_image.cpu())
+            fake_images_full.append(image.cpu())
+            
             log_img = torchvision.utils.make_grid([gt_image, image], nrow=2, pad_value=1)
             imf = f'{self.cfg.logdir}/val/full_{iter_s}_{idx:03d}.png'
             os.makedirs(os.path.dirname(imf), exist_ok=True)
@@ -563,6 +825,17 @@ class GaussianTrainer():
                 metrics['hugs_human_psnr'].append(psnr(cropped_image, cropped_gt_image).mean().double())
                 metrics['hugs_human_ssim'].append(ssim(cropped_image, cropped_gt_image).mean().double())
                 metrics['hugs_human_lpips'].append(self.lpips(cropped_image.clip(max=1), cropped_gt_image).mean().double())
+                
+                
+                cropped_gt_resized = torch.nn.functional.interpolate(
+                    cropped_gt_image.unsqueeze(0), size=(256, 256), mode='bilinear', align_corners=False
+                ).squeeze(0)
+                cropped_resized = torch.nn.functional.interpolate(
+                    cropped_image.unsqueeze(0), size=(256, 256), mode='bilinear', align_corners=False
+                ).squeeze(0)
+                
+                real_images_human.append(cropped_gt_resized.cpu())
+                fake_images_human.append(cropped_resized.cpu())
             
             if len(log_img) > 0:
                 log_img = torchvision.utils.make_grid(log_img, nrow=len(log_img), pad_value=1)
@@ -577,6 +850,21 @@ class GaussianTrainer():
             
             logger.info(f"{iter_s} - {k.upper()}: {torch.stack(v).mean().item():.4f}")
             self.eval_metrics[iter_s][k] = torch.stack(v).mean().item()
+        
+        # Calculate FID scores
+        logger.info("Computing FID scores...")
+        try:
+            if len(real_images_full) > 0:
+                fid_full = self.fid_calculator.calculate_fid(real_images_full, fake_images_full)
+                logger.info(f"{iter_s} - HUGS_FID (full scene): {fid_full:.4f}")
+                self.eval_metrics[iter_s]['hugs_fid'] = fid_full
+            
+            if len(real_images_human) > 0:
+                fid_human = self.fid_calculator.calculate_fid(real_images_human, fake_images_human)
+                logger.info(f"{iter_s} - HUGS_HUMAN_FID (cropped): {fid_human:.4f}")
+                self.eval_metrics[iter_s]['hugs_human_fid'] = fid_human
+        except Exception as e:
+            logger.warning(f"FID calculation failed: {e}")
         
         torch.save(metrics, f'{self.cfg.logdir}/val/eval_{iter_s}.pth')
     

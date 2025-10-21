@@ -114,8 +114,8 @@ def render_human_scene(
         # 1) base image (body+scene) already computed:
         base_rgb = render_pkg["render"]
 
-        # 2) cloth color (with SH)
-        cloth_rgb, _ = _render_colors_only(
+        # 2) cloth color (with SH) - track visibility/radii for densification
+        cloth_rgb, cloth_render_info = _render_colors_only(
             means3D=cloth_gs_out["xyz"],
             feats=cloth_gs_out["shs"],
             opacity=cloth_gs_out["opacity"],
@@ -126,6 +126,11 @@ def render_human_scene(
             bg_color=torch.zeros(3, device=base_rgb.device),
             sh_degree=cloth_gs_out["active_sh_degree"],
         )
+        
+        # Store cloth-specific rendering info for densification
+        render_pkg["cloth_visibility_filter"] = cloth_render_info["visibility_filter"]
+        render_pkg["cloth_radii"] = cloth_render_info["radii"]
+        render_pkg["cloth_viewspace_points"] = cloth_render_info["viewspace_points"]
 
         # 3) cloth visibility vs (body+scene) in one pass (depth-aware matte)
         blockers = {

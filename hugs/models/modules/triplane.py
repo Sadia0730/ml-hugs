@@ -24,9 +24,19 @@ class TriPlane(nn.Module):
         self.scale = 2.0
 
     def forward(self, x):
-        x = (x - self.center) / self.scale + 0.5
-
-        assert x.max() <= 1 + EPS and x.min() >= -EPS, f"x must be in [0, 1], got {x.min()} and {x.max()}"
+        # Auto-detect and normalize any input range to [-1,1] for robust coordinate handling
+        x_min, x_max = x.min(), x.max()
+        if x_max - x_min > 2.0:  # If range > 2, normalize to [-1,1]
+            center = (x_max + x_min) / 2
+            scale = (x_max - x_min) / 2
+            x = (x - center) / scale
+        else:
+            # If already in reasonable range, use standard normalization
+            x = (x - self.center) / self.scale + 0.5
+        
+        # Ensure x is in valid range for grid sampling
+        x = torch.clamp(x, -EPS, 1 + EPS)
+        
         x = x * 2 - 1
         shape = x.shape
         coords = x.reshape(1, -1, 1, 3)

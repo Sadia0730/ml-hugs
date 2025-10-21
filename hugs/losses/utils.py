@@ -61,16 +61,32 @@ def mask_loss(pred_mask, gt_mask):
     return ((pred_mask - gt_mask) ** 2).mean()
 
 def arap_loss(verts, edges):
-    v0, v1 = edges[:, 0], edges[:, 1]
-    diff = verts[v0] - verts[v1]
-    return (diff.norm(dim=-1)).var()  # smoothness
+    """Edge-length variance for ARAP-like smoothing with safety guards.
+    Filters out invalid edges whose indices are out of range after densify/prune.
+    """
+    if edges is None or edges.numel() == 0:
+        return torch.zeros([], dtype=verts.dtype, device=verts.device)
+
+    n = verts.shape[0]
+    # Keep only edges with valid endpoints
+    valid = (edges[:, 0] >= 0) & (edges[:, 0] < n) & (edges[:, 1] >= 0) & (edges[:, 1] < n)
+    if valid.sum() == 0:
+        return torch.zeros([], dtype=verts.dtype, device=verts.device)
+    e = edges[valid]
+
+    diff = verts[e[:, 0]] - verts[e[:, 1]]
+    return (diff.norm(dim=-1)).var()
 
 def geman_mcclure(x, c=0.03):
     return (x**2) / (x**2 + c**2)
 
 def simulation_loss(pred_cloth, gt_cloth):
-    diff = (pred_cloth - gt_cloth).pow(2).sum(-1)
-    return geman_mcclure(diff).mean()
+    # Use Chamfer distance to handle different vertex counts
+    # Chamfer distance: min distance from each pred point to GT points
+    dist_pred_to_gt = torch.cdist(pred_cloth, gt_cloth).min(dim=1)[0]  # [N_pred]
+    dist_gt_to_pred = torch.cdist(gt_cloth, pred_cloth).min(dim=1)[0]  # [N_gt]
+    chamfer_dist = (dist_pred_to_gt.mean() + dist_gt_to_pred.mean()) / 2
+    return geman_mcclure(chamfer_dist.unsqueeze(0)).mean()
 
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()

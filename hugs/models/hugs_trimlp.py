@@ -130,43 +130,17 @@ class HUGS_TRIMLP:
         device = self.device
         verts = cloth_vertices.to(device)
 
-        # ---- Expand bbox: include both vitruvian and cloth ----
-        vb_min = self.vitruvian_verts.min(dim=0, keepdim=True)[0]
-        vb_max = self.vitruvian_verts.max(dim=0, keepdim=True)[0]
-
-        cloth_min = verts.min(dim=0, keepdim=True)[0]
-        cloth_max = verts.max(dim=0, keepdim=True)[0]
-
-        # Take union of bbox
-        all_min = torch.min(vb_min, cloth_min)
-        all_max = torch.max(vb_max, cloth_max)
-
-        # Small padding to avoid edge-case =1.0
-        pad = 1e-3 * (all_max - all_min)
-        all_min = all_min - pad
-        all_max = all_max + pad
-
-        all_scale = (all_max - all_min).clamp_min(1e-8)
-        verts_unit = (verts - all_min) / all_scale
-
-        # Keep transform info (so you can map back)
-        self.cloth_norm = {
-            "min": all_min.detach(),
-            "max": all_max.detach(),
-            "scale": all_scale.detach()
-        }
-
-        # Sanity check
-        with torch.no_grad():
-            vmin, vmax = verts_unit.min().item(), verts_unit.max().item()
-            if vmin < -1e-4 or vmax > 1 + 1e-4:
-                logger.warning(f"[cloth] verts still out of [0,1]: min={vmin:.4f}, max={vmax:.4f}")
+        # ---- Keep cloth in WORLD SPACE like body (no normalization) ----
+        # This ensures triplane queries are consistent between body and cloth
+        verts_world = verts  # Keep in world space
+        
+        logger.info(f"[Cloth Init] vertices range: min={verts_world.min(dim=0)[0]}, max={verts_world.max(dim=0)[0]}")
 
         # Scaling multiplier (same as SMPL init)
-        self.cloth_scaling_multiplier = torch.ones((verts.shape[0], 1), device=device)
+        self.cloth_scaling_multiplier = torch.ones((verts_world.shape[0], 1), device=device)
 
         # Base SH colors (neutral gray)
-        colors = torch.ones_like(verts_unit) * 0.5
+        colors = torch.ones_like(verts_world) * 0.5
         shs = torch.zeros((colors.shape[0], 3, 16), dtype=torch.float32, device=device)
         shs[:, :3, 0] = colors
         shs = shs.transpose(1, 2).contiguous()
@@ -174,24 +148,24 @@ class HUGS_TRIMLP:
         # Build mesh if faces are provided
         if cloth_faces is not None:
             mesh = trimesh.Trimesh(
-                vertices=verts_unit.detach().cpu().numpy(),
+                vertices=verts_world.detach().cpu().numpy(),
                 faces=cloth_faces.detach().cpu().numpy(),
                 process=False
             )
             vert_normals = torch.tensor(mesh.vertex_normals, dtype=torch.float32, device=device)
             edges = torch.tensor(mesh.edges_unique, dtype=torch.long, device=device)
         else:
-            vert_normals = torch.zeros_like(verts_unit)
+            vert_normals = torch.zeros_like(verts_world)
             vert_normals[:, 2] = 1.0
             edges = torch.zeros((0, 2), dtype=torch.long, device=device)
 
         # Compute per-vertex scales
-        scales = torch.zeros_like(verts_unit)
-        for v in range(verts_unit.shape[0]):
+        scales = torch.zeros_like(verts_world)
+        for v in range(verts_world.shape[0]):
             selected_edges = torch.any(edges == v, dim=-1)
             if selected_edges.sum() > 0:
                 e = edges[selected_edges]
-                edge_len = torch.norm(verts_unit[e[:, 0]] - verts_unit[e[:, 1]], dim=-1)
+                edge_len = torch.norm(verts_world[e[:, 0]] - verts_world[e[:, 1]], dim=-1)
                 edge_len *= self.init_scale_multiplier
                 s = torch.log(torch.max(edge_len))
                 scales[v, 0] = s
@@ -211,7 +185,7 @@ class HUGS_TRIMLP:
         rot6d = matrix_to_rotation_6d(norm_rotmat)
 
         # Opacity
-        opacity = 0.1 * torch.ones((verts_unit.shape[0], 1), dtype=torch.float32, device=device)
+        opacity = 0.1 * torch.ones((verts_world.shape[0], 1), dtype=torch.float32, device=device)
        
         # === cloth stats for densification ===
         self.cloth_xyz_gradient_accum = torch.zeros((verts.shape[0], 1), device=device)
@@ -225,7 +199,7 @@ class HUGS_TRIMLP:
 
         # Save into dict
         self.cloth_gaussians = {
-            "xyz": nn.Parameter(verts_unit.requires_grad_(True)),
+            "xyz": nn.Parameter(verts_world.requires_grad_(True)),
             "scales": scales,
             "rot6d_canon": rot6d,
             "shs": shs,
@@ -236,8 +210,39 @@ class HUGS_TRIMLP:
         }
 
         logger.info(
-            f"Initialized cloth gaussians: {verts_unit.shape[0]} verts, "
+            f"Initialized cloth gaussians: {verts_world.shape[0]} verts, "
             f"{edges.shape[0]} edges, faces={cloth_faces is not None}"
+        )
+        
+        # Precompute cloth LBS weight table (Option B from user's analysis)
+        self.build_cloth_weight_table(verts_world)
+    
+    @torch.no_grad()
+    def build_cloth_weight_table(self, cloth_tpose_verts):
+        """
+        Precompute cloth LBS weight table by mapping each cloth vertex to nearest SMPL vertex weights.
+        This ensures KNN indices during training match the weight table dimensions → no OOB errors.
+        
+        Args:
+            cloth_tpose_verts: Cloth vertices in T-pose/canonical space [N_cloth, 3]
+        """
+        from hugs.models.hugs_wo_trimlp import smpl_lbsweight_top_k
+        
+        # Map each cloth T-pose vertex to SMPL template weights
+        _, cloth_weights = smpl_lbsweight_top_k(
+            lbs_weights=self.smpl.lbs_weights,              # [6890, 24] - SMPL weights
+            points=cloth_tpose_verts.unsqueeze(0),          # [1, N_cloth, 3]
+            template_points=self.vitruvian_verts.unsqueeze(0),  # [1, 6890, 3] - SMPL template
+            K=6,
+        )
+        
+        # Cache as plain attributes (class is not an nn.Module, so no register_buffer)
+        self.cloth_lbs_weights_table = cloth_weights.squeeze(0).detach()  # [N_cloth, 24]
+        self.cloth_tpose_template = cloth_tpose_verts.clone().detach()    # [N_cloth, 3]
+        
+        logger.info(
+            f"[Cloth LBS] Precomputed weight table: {self.cloth_lbs_weights_table.shape}, "
+            f"template: {self.cloth_tpose_template.shape}"
         )
       
     def create_body_pose(self, body_pose, requires_grad=False):
@@ -670,152 +675,7 @@ class HUGS_TRIMLP:
             'posedirs': posedirs,
             'gt_lbs_weights': gt_lbs_weights,
         }
-    def canon_forward_cloth(self):
-        assert self.cloth_gaussians is not None, "Call initialize_cloth first."
-        cloth_xyz = torch.clamp(self.cloth_gaussians["xyz"], 0.0, 1.0)
-        tri_feats = self.triplane(cloth_xyz)
-        appearance_out = self.appearance_dec(tri_feats)
-        geometry_out   = self.geometry_dec(tri_feats)
 
-        xyz_offsets = geometry_out['xyz']                           # Δμ
-        rot6d       = geometry_out['rotations']                     # R
-        scales      = geometry_out['scales'] * self.cloth_scaling_multiplier  # S
-
-        opacity     = appearance_out['opacity']                     # o
-        shs         = appearance_out['shs'].reshape(-1, 16, 3)      # SH
-
-        if self.use_deformer:
-            deformation_out = self.deformation_dec(tri_feats)
-            lbs_w = F.softmax(deformation_out['lbs_weights']/0.1, dim=-1)  # W
-            posedirs = deformation_out['posedirs']
-        else:
-            lbs_w, posedirs = None, None
-
-        return {
-            "xyz_offsets": xyz_offsets,
-            "rot6d_canon": rot6d,
-            "scales": scales,
-            "opacity": opacity,
-            "shs": shs,
-            "lbs_weights": lbs_w,
-            "posedirs": posedirs,
-        }
-
-
-    def forward_cloth(
-        self,
-        canon_forward_out,
-        global_orient=None, body_pose=None, betas=None, transl=None, smpl_scale=None,
-        dataset_idx=-1, is_train=False, ext_tfs=None,
-    ):
-        # canonical attrs
-        xyz_offsets = canon_forward_out['xyz_offsets']
-        rot6d       = canon_forward_out['rot6d_canon']
-        scales      = canon_forward_out['scales']
-
-        # canonical xyz (DA pose cloth)
-        xyz_canon = self.cloth_gaussians["xyz"] + xyz_offsets
-
-        rotmat_canon = rotation_6d_to_matrix(rot6d)
-        rotq_canon   = matrix_to_quaternion(rotmat_canon)
-
-        if self.isotropic:
-            scales = torch.ones_like(scales) * torch.mean(scales, dim=-1, keepdim=True)
-        scales_canon = scales.clone()
-
-        # SMPL pose inputs (reuse human params if not passed)
-        if hasattr(self, 'global_orient') and global_orient is None:
-            global_orient = rotation_6d_to_axis_angle(self.global_orient[dataset_idx].reshape(-1,6)).reshape(3)
-        if hasattr(self, 'body_pose') and body_pose is None:
-            body_pose = rotation_6d_to_axis_angle(self.body_pose[dataset_idx].reshape(-1,6)).reshape(23*3)
-        if hasattr(self, 'betas') and betas is None:
-            betas = self.betas
-        if hasattr(self, 'transl') and transl is None:
-            transl = self.transl[dataset_idx]
-
-        smpl_out = self.smpl(
-            betas=betas.unsqueeze(0),
-            body_pose=body_pose.unsqueeze(0),
-            global_orient=global_orient.unsqueeze(0),
-            disable_posedirs=False,
-            return_full_pose=True,
-        )
-
-        # LBS transform for cloth points (same as body)
-        if self.use_deformer:
-            A_t2pose = smpl_out.A[0]
-            A_vit2pose = A_t2pose @ self.inv_A_t2vitruvian
-            deformed_xyz, _, lbs_T, _, _ = lbs_extra(
-                A_vit2pose[None],
-                xyz_canon[None],
-                canon_forward_out['posedirs'],
-                canon_forward_out['lbs_weights'],
-                smpl_out.full_pose,
-                disable_posedirs=self.disable_posedirs,
-                pose2rot=True,
-            )
-            deformed_xyz = deformed_xyz.squeeze(0)
-            lbs_T = lbs_T.squeeze(0)
-        else:
-            # map with SMPL template LBS around canonical cloth points
-            T_t2pose = smpl_out.T[0]
-            T_vit2t  = self.inv_T_t2vitruvian.clone()
-            curr_offsets = (smpl_out.shape_offsets + smpl_out.pose_offsets)[0]
-            T_vit2t[..., :3, 3] = T_vit2t[..., :3, 3] + self.canonical_offsets - curr_offsets
-            T_vit2pose = T_t2pose @ T_vit2t
-
-            _, lbs_T = smpl_lbsmap_top_k(
-                lbs_weights=self.smpl.lbs_weights,
-                verts_transform=T_vit2pose.unsqueeze(0),
-                points=xyz_canon.unsqueeze(0),
-                template_points=self.vitruvian_verts.unsqueeze(0),
-                K=6,
-            )
-            lbs_T = lbs_T.squeeze(0)
-
-            # apply
-            homo = torch.ones_like(xyz_canon[..., :1])
-            xyz_h = torch.cat([xyz_canon, homo], dim=-1)
-            deformed_xyz = torch.matmul(lbs_T, xyz_h.unsqueeze(-1))[..., :3, 0]
-
-        # scale / translation / external transforms
-        if smpl_scale is not None:
-            deformed_xyz = deformed_xyz * smpl_scale.unsqueeze(0)
-            scales = scales * smpl_scale.unsqueeze(0)
-        if transl is not None:
-            deformed_xyz = deformed_xyz + transl.unsqueeze(0)
-
-        rotmat = lbs_T[:, :3, :3] @ rotmat_canon
-        rotq   = matrix_to_quaternion(rotmat)
-
-        if ext_tfs is not None:
-            tr, Rext, sc = ext_tfs
-            deformed_xyz = (tr[..., None] + (sc[None] * (Rext @ deformed_xyz[..., None]))).squeeze(-1)
-            scales = sc * scales
-            rotq = quaternion_multiply(matrix_to_quaternion(Rext), rotq)
-            rotmat = quaternion_to_matrix(rotq)
-
-        # normals like body
-        normals_canon = torch.zeros_like(xyz_canon)
-        normals_canon[:, 2] = 1.0
-        normals_canon = (rotmat_canon @ normals_canon.unsqueeze(-1)).squeeze(-1)
-        normals = (rotmat @ torch.zeros_like(xyz_canon).index_fill(-1, torch.tensor([2], device=xyz_canon.device), 1.0).unsqueeze(-1)).squeeze(-1)
-
-        return {
-            "xyz": deformed_xyz,
-            "xyz_canon": xyz_canon,
-            "scales": scales,
-            "scales_canon": scales_canon,
-            "rotmat": rotmat,
-            "rotmat_canon": rotmat_canon,
-            "rotq": rotq,
-            "rotq_canon": rotq_canon,
-            "opacity": canon_forward_out["opacity"],
-            "shs": canon_forward_out["shs"],
-            "active_sh_degree": self.active_sh_degree,
-            "lbs_weights": canon_forward_out["lbs_weights"],
-            "posedirs": canon_forward_out["posedirs"],
-        }
     def forward(
         self,
         global_orient=None, 
@@ -836,13 +696,190 @@ class HUGS_TRIMLP:
         # === cloth (optional) ===
         cloth_out = None
         if self.cloth_gaussians is not None:
-            cloth_can = self.canon_forward_cloth()
+            # Use single-stage approach like human body
             cloth_out = self.forward_cloth(
-                cloth_can, global_orient, body_pose, betas, transl, smpl_scale,
+                global_orient, body_pose, betas, transl, smpl_scale,
                 dataset_idx, is_train, ext_tfs
             )
 
         return {"body": body_out, "cloth": cloth_out} if cloth_out else body_out
+
+    def forward_cloth(
+        self,
+        global_orient=None,
+        body_pose=None,
+        betas=None,
+        transl=None,
+        smpl_scale=None,
+        dataset_idx=-1,
+        is_train=False,
+        ext_tfs=None,
+    ):
+        """Single-stage cloth processing (same pattern as human body)."""
+        assert self.cloth_gaussians is not None, "Call initialize_cloth first."
+        
+        # === STEP 1: Feature Extraction (like human body) ===
+        cloth_xyz = self.cloth_gaussians["xyz"]  # Cloth Gaussians in canonical space
+        tri_feats = self.triplane(cloth_xyz)
+        appearance_out = self.appearance_dec(tri_feats)
+        geometry_out = self.geometry_dec(tri_feats)
+        
+        # Extract individual components
+        xyz_offsets = geometry_out['xyz']                           # Δμ - position adjustments
+        gs_rot6d = geometry_out['rotations']                        # R - rotation adjustments  
+        gs_scales = geometry_out['scales'] * self.cloth_scaling_multiplier  # S - scale adjustments
+        
+        gs_opacity = appearance_out['opacity']                     # o - opacity
+        gs_shs = appearance_out['shs'].reshape(-1, 16, 3)         # SH - spherical harmonics colors
+        
+        # Get canonical cloth position with offsets
+        gs_xyz = cloth_xyz + xyz_offsets  # Canonical cloth position + small adjustments
+        
+        gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
+        gs_rotq = matrix_to_quaternion(gs_rotmat)
+        
+        if self.isotropic:
+            gs_scales = torch.ones_like(gs_scales) * torch.mean(gs_scales, dim=-1, keepdim=True)
+            
+        gs_scales_canon = gs_scales.clone()
+        
+        # === STEP 2: LBS Weights (like human body) ===
+        if self.use_deformer:
+            deformation_out = self.deformation_dec(tri_feats)
+            lbs_weights = deformation_out['lbs_weights']
+            lbs_weights = F.softmax(lbs_weights/0.1, dim=-1)
+            posedirs = deformation_out['posedirs']
+        else:
+            lbs_weights = None
+            posedirs = None
+        
+        # === STEP 3: SMPL Pose Processing (same as human body) ===
+        if hasattr(self, 'global_orient') and global_orient is None:
+            global_orient = rotation_6d_to_axis_angle(self.global_orient[dataset_idx].reshape(-1,6)).reshape(3)
+        if hasattr(self, 'body_pose') and body_pose is None:
+            body_pose = rotation_6d_to_axis_angle(self.body_pose[dataset_idx].reshape(-1,6)).reshape(23*3)
+        if hasattr(self, 'betas') and betas is None:
+            betas = self.betas
+        if hasattr(self, 'transl') and transl is None:
+            transl = self.transl[dataset_idx]
+        # Run SMPL forward pass
+        smpl_output = self.smpl(
+            betas=betas.unsqueeze(0),
+            body_pose=body_pose.unsqueeze(0),
+            global_orient=global_orient.unsqueeze(0),
+            disable_posedirs=False,
+            return_full_pose=True,
+        )
+        # === STEP 4: Deformation (LBS) - SAME AS HUMAN BODY ===
+        if self.use_deformer:
+            A_t2pose = smpl_output.A[0]
+            A_vitruvian2pose = A_t2pose @ self.inv_A_t2vitruvian
+            deformed_xyz, _, lbs_T, _, _ = lbs_extra(
+                A_vitruvian2pose[None], gs_xyz[None], posedirs, lbs_weights, 
+                smpl_output.full_pose, disable_posedirs=self.disable_posedirs, pose2rot=True
+            )
+            deformed_xyz = deformed_xyz.squeeze(0)
+            lbs_T = lbs_T.squeeze(0)
+            gt_lbs_weights = None
+            # Compute GT LBS weights using precomputed cloth weight table (Option B)
+            # KNN now operates on cloth template → indices match cloth_lbs_weights_table → no OOB!
+            with torch.no_grad():
+                try:
+                    from hugs.models.hugs_wo_trimlp import smpl_lbsweight_top_k
+                    
+                    # Use precomputed cloth weight table with original cloth template
+                    # We want to map current cloth vertices (gs_xyz) to original cloth template positions
+                    # This gives us consistent LBS weights based on the original cloth topology
+                    _, gt_lbs_weights = smpl_lbsweight_top_k(
+                        lbs_weights=self.cloth_lbs_weights_table,     # [N_cloth, 24] - precomputed!
+                        points=gs_xyz.unsqueeze(0),                   # [1, N_cloth, 3] - current cloth vertices
+                        template_points=self.cloth_tpose_template.unsqueeze(0),  # [1, N_cloth, 3] - original template
+                        K=6,
+                    )
+                    gt_lbs_weights = gt_lbs_weights.squeeze(0)  # [N_cloth, 24]
+                    
+                    # Validate
+                    weight_sum = gt_lbs_weights.sum(-1).mean().item()
+                    if abs(weight_sum - 1.0) > 1e-5:
+                        from loguru import logger
+                        logger.warning(f"Cloth GT LBS weights sum: {weight_sum:.6f} (expected 1.0)")
+                        
+                except Exception as e:
+                    from loguru import logger
+                    logger.error(f"Cloth LBS weight computation failed: {e}")
+                    gt_lbs_weights = None
+        else:
+            curr_offsets = (smpl_output.shape_offsets + smpl_output.pose_offsets)[0]
+            T_t2pose = smpl_output.T[0]
+            T_vitruvian2t = self.inv_T_t2vitruvian.clone()
+            T_vitruvian2t[..., :3, 3] = T_vitruvian2t[..., :3, 3] + self.canonical_offsets - curr_offsets
+            T_vitruvian2pose = T_t2pose @ T_vitruvian2t
+            
+            _, lbs_T = smpl_lbsmap_top_k(
+                lbs_weights=self.smpl.lbs_weights,
+                verts_transform=T_vitruvian2pose.unsqueeze(0),
+                points=gs_xyz.unsqueeze(0),
+                template_points=self.vitruvian_verts.unsqueeze(0),
+                K=6,
+            )
+            lbs_T = lbs_T.squeeze(0)
+            
+            homogen_coord = torch.ones_like(gs_xyz[..., :1])
+            gs_xyz_homo = torch.cat([gs_xyz, homogen_coord], dim=-1)
+            deformed_xyz = torch.matmul(lbs_T, gs_xyz_homo.unsqueeze(-1))[..., :3, 0]
+        
+        # === STEP 5: Final Transforms (same as human body) ===
+        if smpl_scale is not None:
+            deformed_xyz = deformed_xyz * smpl_scale.unsqueeze(0)
+            gs_scales = gs_scales * smpl_scale.unsqueeze(0)
+        
+        if transl is not None:
+            deformed_xyz = deformed_xyz + transl.unsqueeze(0)
+        
+        deformed_gs_rotmat = lbs_T[:, :3, :3] @ gs_rotmat
+        deformed_gs_rotq = matrix_to_quaternion(deformed_gs_rotmat)
+        
+        if ext_tfs is not None:
+            tr, rotmat, sc = ext_tfs
+            deformed_xyz = (tr[..., None] + (sc[None] * (rotmat @ deformed_xyz[..., None]))).squeeze(-1)
+            gs_scales = sc * gs_scales
+            
+            rotq = matrix_to_quaternion(rotmat)
+            deformed_gs_rotq = quaternion_multiply(rotq, deformed_gs_rotq)
+            deformed_gs_rotmat = quaternion_to_matrix(deformed_gs_rotq)
+        
+        # === STEP 6: Compute Normals (same as human body) ===
+        normals = torch.zeros_like(gs_xyz)
+        normals[:, 2] = 1.0
+        canon_normals = (gs_rotmat @ normals.unsqueeze(-1)).squeeze(-1)
+        deformed_normals = (deformed_gs_rotmat @ normals.unsqueeze(-1)).squeeze(-1)
+        
+        # Debug logging
+        if is_train and torch.rand(1) < 0.01:  # Log 1% of the time
+            from loguru import logger
+            deformation_mag = torch.norm(deformed_xyz - gs_xyz, dim=1).mean()
+            logger.info(f"Cloth single-stage deformation magnitude: {deformation_mag:.6f}")
+        
+        return {
+            'xyz': deformed_xyz,           # Final deformed cloth vertices
+            'xyz_canon': gs_xyz,           # Canonical cloth vertices
+            'xyz_offsets': xyz_offsets,    # Position offsets
+            'scales': gs_scales,           # Final scales
+            'scales_canon': gs_scales_canon, # Canonical scales
+            'rotq': deformed_gs_rotq,      # Final rotations
+            'rotq_canon': gs_rotq,         # Canonical rotations
+            'rotmat': deformed_gs_rotmat,  # Final rotation matrices
+            'rotmat_canon': gs_rotmat,     # Canonical rotation matrices
+            'shs': gs_shs,                # Colors
+            'opacity': gs_opacity,         # Opacity
+            'normals': deformed_normals,   # Final normals
+            'normals_canon': canon_normals, # Canonical normals
+            'lbs_weights': lbs_weights,    # LBS weights used
+            'gt_lbs_weights': gt_lbs_weights, # GT LBS weights for regularization
+            'posedirs': posedirs,          # Pose directions used
+            'active_sh_degree': self.active_sh_degree,
+            'rot6d_canon': gs_rot6d,
+        }
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
@@ -873,6 +910,16 @@ class HUGS_TRIMLP:
         smpl_output = self.smpl_template(body_pose=vitruvian_pose[None], betas=self.betas[None], disable_posedirs=False)
         vitruvian_verts = smpl_output.vertices[0]
         return vitruvian_verts.detach()
+    
+        @torch.no_grad()
+        def get_tpose_verts_template(self):
+            """Get T-pose vertices from ORIGINAL SMPL model (not subdivided)."""
+            # Use original SMPL model for LBS weight computation (not subdivided version)
+            original_smpl = SMPL(SMPL_PATH).to(self.device)
+            tpose_pose = torch.zeros(69, dtype=original_smpl.dtype, device=self.device)  # All zeros = T-pose
+            smpl_output = original_smpl(body_pose=tpose_pose[None], betas=self.betas[None], disable_posedirs=False)
+            tpose_verts = smpl_output.vertices[0]  # This will be [6890, 3] - original SMPL template vertices
+            return tpose_verts.detach()
     
     def train(self):
         pass
@@ -1266,16 +1313,49 @@ class HUGS_TRIMLP:
 
         # apply pruning
         keep = ~prune_mask
-        self.cloth_gaussians["xyz"] = nn.Parameter(self.cloth_gaussians["xyz"][keep].requires_grad_(True))
+        old_cloth_xyz = self.cloth_gaussians["xyz"]
+        new_cloth_xyz = nn.Parameter(old_cloth_xyz[keep].requires_grad_(True))
+        self.cloth_gaussians["xyz"] = new_cloth_xyz
 
         # Replace the cloth param in the optimizer while preserving state
-        new_cloth_xyz = self.cloth_gaussians["xyz"]
-
         if self.optimizer is None:
             logger.warning("Optimizer not set up yet; skipping optimizer replacement for cloth_xyz")
         else:
-            opt_map = self.replace_tensor_to_optimizer(new_cloth_xyz, name="cloth_xyz")
-            self.cloth_gaussians["xyz"] = opt_map["cloth_xyz"]
+            # Find the cloth_xyz parameter group
+            cloth_group = None
+            for group in self.optimizer.param_groups:
+                if group.get("name") == "cloth_xyz":
+                    cloth_group = group
+                    break
+            
+            if cloth_group is not None:
+                old_param = cloth_group["params"][0]
+                
+                # Preserve optimizer state for kept parameters
+                if old_param in self.optimizer.state:
+                    stored_state = self.optimizer.state[old_param]
+                    
+                    # Filter state tensors to match kept indices
+                    for key, value in stored_state.items():
+                        if isinstance(value, torch.Tensor) and len(value.shape) > 0 and value.shape[0] == old_param.shape[0]:
+                            stored_state[key] = value[keep]
+                    
+                    # Remove old state and add new state
+                    del self.optimizer.state[old_param]
+                    self.optimizer.state[new_cloth_xyz] = stored_state
+                else:
+                    # Initialize fresh state for new parameter
+                    self.optimizer.state[new_cloth_xyz] = {
+                        "step": torch.zeros(1, device=new_cloth_xyz.device),
+                        "exp_avg": torch.zeros_like(new_cloth_xyz),
+                        "exp_avg_sq": torch.zeros_like(new_cloth_xyz),
+                    }
+                
+                # Update the parameter group
+                cloth_group["params"][0] = new_cloth_xyz
+                logger.info(f"Updated cloth_xyz optimizer state: {old_param.shape} -> {new_cloth_xyz.shape}")
+            else:
+                logger.warning("cloth_xyz parameter group not found in optimizer")
 
         # Now prune your side buffers
         self.cloth_scaling_multiplier = self.cloth_scaling_multiplier[keep]
@@ -1286,3 +1366,30 @@ class HUGS_TRIMLP:
         self.cloth_xyz_gradient_accum = self.cloth_xyz_gradient_accum[keep]
         self.cloth_denom = self.cloth_denom[keep]
         self.cloth_max_radii2D = self.cloth_max_radii2D[keep]
+        
+        # CRITICAL: Update cloth LBS weight table and template after densification
+        # This prevents OOB errors when vertex count changes
+        self.cloth_lbs_weights_table = self.cloth_lbs_weights_table[keep]
+        self.cloth_tpose_template = self.cloth_tpose_template[keep]
+        logger.info(f"Updated cloth LBS table after pruning: {self.cloth_lbs_weights_table.shape}")
+
+        # Remap cloth edges/faces to the new compact vertex indexing so ARAP stays valid
+        old_n = keep.shape[0]
+        index_map = torch.full((old_n,), -1, device=keep.device, dtype=torch.long)
+        index_map[keep] = torch.arange(keep.sum(), device=keep.device, dtype=torch.long)
+
+        # Update edges if present
+        if "edges" in self.cloth_gaussians and self.cloth_gaussians["edges"] is not None and self.cloth_gaussians["edges"].numel() > 0:
+            edges_old = self.cloth_gaussians["edges"]
+            edges_new = index_map[edges_old]
+            valid_edges = (edges_new[:, 0] >= 0) & (edges_new[:, 1] >= 0)
+            self.cloth_gaussians["edges"] = edges_new[valid_edges]
+            logger.info(f"Remapped cloth edges: {edges_old.shape[0]} -> {self.cloth_gaussians['edges'].shape[0]}")
+
+        # Update faces if present
+        if "faces" in self.cloth_gaussians and self.cloth_gaussians["faces"] is not None and self.cloth_gaussians["faces"].numel() > 0:
+            faces_old = self.cloth_gaussians["faces"]
+            faces_new = index_map[faces_old]
+            valid_faces = (faces_new >= 0).all(dim=1)
+            self.cloth_gaussians["faces"] = faces_new[valid_faces]
+            logger.info(f"Remapped cloth faces: {faces_old.shape[0]} -> {self.cloth_gaussians['faces'].shape[0]}")

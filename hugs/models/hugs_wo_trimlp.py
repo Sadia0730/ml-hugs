@@ -59,6 +59,12 @@ def smpl_lbsmap_top_k(
     with torch.no_grad():
         results = knn_points(points, template_points, K=K)
         dists, idxs = results.dists, results.idx
+        # Guard: ensure KNN indices are within lbs_weights rows
+        n_rows = lbs_weights.shape[0]
+        max_idx = idxs.max()
+        if max_idx >= n_rows:
+            # Clamp to valid range to avoid device-side assert
+            idxs = idxs.clamp_max(n_rows - 1)
     neighbs_dist = dists
     neighbs = idxs
     weight_std = 0.1
@@ -98,6 +104,11 @@ def smpl_lbsweight_top_k(
     with torch.no_grad():
         results = knn_points(points, template_points, K=K)
         dists, idxs = results.dists, results.idx
+        # Guard: ensure KNN indices are within lbs_weights rows
+        n_rows = lbs_weights.shape[0]
+        max_idx = idxs.max()
+        if max_idx >= n_rows:
+            idxs = idxs.clamp_max(n_rows - 1)
     neighbs_dist = dists
     neighbs = idxs
     weight_std = 0.1

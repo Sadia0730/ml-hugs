@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from hugs.utils.sampler import PatchSampler
 
-from .utils import l1_loss, ssim
+from .utils import l1_loss, ssim, total_variation_loss
 from .utils import simulation_loss, arap_loss, mask_loss
 
 
@@ -25,6 +25,8 @@ class HumanSceneLoss(nn.Module):
         l_cloth_sim_w=0.0,
         l_cloth_arap_w=0.0,
         l_cloth_mask_w=0.0,
+        l_opacity_entropy_w=0.0,
+        l_tv_w=0.0,
         num_patches=4,
         patch_size=32,
         use_patches=True,
@@ -40,6 +42,8 @@ class HumanSceneLoss(nn.Module):
         self.l_cloth_sim_w = l_cloth_sim_w
         self.l_cloth_arap_w = l_cloth_arap_w
         self.l_cloth_mask_w = l_cloth_mask_w
+        self.l_opacity_entropy_w = l_opacity_entropy_w
+        self.l_tv_w = l_tv_w
         self.use_patches = use_patches
         
         self.bg_color = bg_color
@@ -172,6 +176,20 @@ class HumanSceneLoss(nn.Module):
             cloth_gt   = data.get("cloth_gt", None)        # GT cloth mesh verts from SNUG
             cloth_edges = human_gs_init_values.get("cloth_edges", None) if human_gs_init_values else None
 
+            # === Cloth LBS Regularization Loss ===
+            if self.l_lbs_w > 0.0 and "lbs_weights" in cloth_gs_out and cloth_gs_out["lbs_weights"] is not None:
+                if "gt_lbs_weights" in cloth_gs_out and cloth_gs_out["gt_lbs_weights"] is not None:
+                    loss_cloth_lbs = F.mse_loss(
+                        cloth_gs_out["lbs_weights"], 
+                        cloth_gs_out["gt_lbs_weights"].detach()
+                    ).mean()
+                    loss_dict["cloth_lbs"] = self.l_lbs_w * loss_cloth_lbs
+                else:
+                    # Fallback: Skip cloth LBS regularization if GT weights unavailable
+                    # Using body LBS weights for cloth would be incorrect due to different topologies
+                    print(f"⚠️  CLOTH LBS REGULARIZATION SKIPPED: gt_lbs_weights not available for cloth")
+                    pass  # Skip cloth LBS regularization when GT weights are missing
+
             if cloth_pred is not None and cloth_gt is not None:
                 if self.l_cloth_sim_w > 0:
                     l_sim = simulation_loss(cloth_pred, cloth_gt)
@@ -184,6 +202,37 @@ class HumanSceneLoss(nn.Module):
                 if self.l_cloth_mask_w > 0 and "render_mask" in render_pkg:
                     l_mask = mask_loss(render_pkg["render_mask"], data["mask"])
                     loss_dict["cloth_mask"] = self.l_cloth_mask_w * l_mask
+
+        # === Opacity Entropy Regularization ===
+        # Encourages Gaussians to be either fully opaque (1) or transparent (0)
+        # Reduces "milky" artifacts from mid-opacity Gaussians (~0.5)
+        if self.l_opacity_entropy_w > 0.0:
+            opacity_losses = []
+            
+            # Body opacity entropy
+            if body_out is not None and 'opacity' in body_out:
+                opacity = body_out['opacity'].clamp(1e-6, 1-1e-6)  # numerical stability
+                entropy = -(opacity * torch.log(opacity) + (1-opacity) * torch.log(1-opacity))
+                opacity_losses.append(entropy.mean())
+            
+            # Cloth opacity entropy
+            if cloth_gs_out is not None and 'opacity' in cloth_gs_out:
+                opacity = cloth_gs_out['opacity'].clamp(1e-6, 1-1e-6)
+                entropy = -(opacity * torch.log(opacity) + (1-opacity) * torch.log(1-opacity))
+                opacity_losses.append(entropy.mean())
+            
+            if len(opacity_losses) > 0:
+                loss_dict["opacity_entropy"] = self.l_opacity_entropy_w * torch.stack(opacity_losses).mean()
+
+        # === Total Variation Loss ===
+        # Penalizes high-frequency noise and "milky" artifacts in rendered images
+        # Encourages smooth, locally coherent rendering
+        if self.l_tv_w > 0.0:
+            rendered_img = render_pkg.get("render", None)
+            if rendered_img is not None:
+                # Apply TV loss to rendered image (expects [C, H, W])
+                tv_loss = total_variation_loss(rendered_img)
+                loss_dict["tv"] = self.l_tv_w * tv_loss
 
         loss = 0.0
         for k, v in loss_dict.items():
