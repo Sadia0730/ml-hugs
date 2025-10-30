@@ -1,7 +1,7 @@
 seed: 0
-mode: human
+mode: scene
 output_path: output
-exp_name: 20240303_1758_release_test
+exp_name: demo
 dataset_path: ''
 detect_anomaly: false
 debug: false
@@ -9,17 +9,14 @@ wandb: false
 eval: false
 bg_color: white
 dataset:
-  name: neuman
-  dataset_path: "data/neuman/dataset"  # Base path for dataset (full path: {dataset_path}/{seq})
-  seq: "citron"
-  cloth_upper: "tshirt"  # Upper garment: "tshirt", "top", "shirt", "hoodie", etc.
-  cloth_lower: "pants"   # Lower garment: "pants", "shorts", "skirt", etc.
-  cloth_dir: "assets/snug"  # Base directory for cloth meshes (frame-specific meshes in {cloth_dir}/{seq}/)
+  name: zju
+  subject: "313"  # ZJU-MoCap subject ID: "313", "315", "377", "386", "387", "390", "392", "393", "394"
+  camera_id: 0     # Camera to use for training (0 = Camera_B1)
 train:
-  batch_size: 4
-  num_workers: 4
+  batch_size: 1
+  num_workers: 0
   num_steps: 14998
-  save_ckpt_interval: 2000
+  save_ckpt_interval: 15000
   val_interval: 1000
   anim_interval: 15000
   optim_scene: true
@@ -78,10 +75,9 @@ human:
     ssim_w: 0.2
     l1_w: 0.8
     lpips_w: 1.0
-    lbs_w: 1000.0
-    humansep_w: 0.0
-    num_patches: 8
-    patch_size: 256
+    humansep_w: 1.0
+    num_patches: 4
+    patch_size: 128
     use_patches: 1
   densification_interval: 600
   opacity_reset_interval: 3000
@@ -90,7 +86,7 @@ human:
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   densify_extent: 1.0
-  max_n_gaussians: 200000
+  max_n_gaussians: 524288
   percent_dense: 0.01
 scene:
   name: scene_gs
@@ -123,3 +119,4 @@ scene:
   loss:
     ssim_w: 0.2
     l1_w: 0.8
+

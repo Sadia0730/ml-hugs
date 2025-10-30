@@ -1,32 +1,37 @@
 seed: 0
 mode: human
 output_path: output
-exp_name: 20240303_1758_release_test
+exp_name: zju_387_train
 dataset_path: ''
 detect_anomaly: false
 debug: false
 wandb: false
 eval: false
 bg_color: white
+
 dataset:
-  name: neuman
-  dataset_path: "data/neuman/dataset"  # Base path for dataset (full path: {dataset_path}/{seq})
-  seq: "citron"
-  cloth_upper: "tshirt"  # Upper garment: "tshirt", "top", "shirt", "hoodie", etc.
-  cloth_lower: "pants"   # Lower garment: "pants", "shorts", "skirt", etc.
+  name: zju              # <— your loader class ZJUMoCapDataset
+  dataset_path: "data/zju_mocap/processed"  # Base path for dataset (full path: {dataset_path}/{seq})
+  seq: "387"             # <— subject ID you processed
+  split: train           # or val / animation
+  render_mode: human
+  cloth_upper: "top"     # Upper garment type (must match {frame:04d}_{type}.obj in cloth dir)
+  cloth_lower: "pants"   # Lower garment type
   cloth_dir: "assets/snug"  # Base directory for cloth meshes (frame-specific meshes in {cloth_dir}/{seq}/)
+
 train:
   batch_size: 4
   num_workers: 4
-  num_steps: 14998
+  num_steps: 15000
   save_ckpt_interval: 2000
   val_interval: 1000
   anim_interval: 15000
   optim_scene: true
   save_progress_images: false
   progress_save_interval: 10
+
 human:
-  name: hugs_trimlp
+  name: hugs_trimlp      # same network as Neuman version
   ckpt: null
   sh_degree: 0
   n_subdivision: 2
@@ -50,6 +55,7 @@ human:
   canon_nframes: 60
   canon_pose_type: da_pose
   knn_n_hops: 3
+
   lr:
     wd: 0.0
     position: 0.00016
@@ -74,15 +80,22 @@ human:
     vembed: 0.001
     deformation: 0.0001
     scale_lr_w_npoints: false
+
   loss:
     ssim_w: 0.2
     l1_w: 0.8
     lpips_w: 1.0
     lbs_w: 1000.0
+    cloth_sim_w: 1.0
+    cloth_arap_w: 0.5
+    cloth_mask_w: 1.0
     humansep_w: 0.0
+    opacity_entropy_w: 0.0
+    tv_w: 0.01
     num_patches: 8
     patch_size: 256
     use_patches: 1
+
   densification_interval: 600
   opacity_reset_interval: 3000
   densify_from_iter: 3000
@@ -92,6 +105,7 @@ human:
   densify_extent: 1.0
   max_n_gaussians: 200000
   percent_dense: 0.01
+
 scene:
   name: scene_gs
   ckpt: null
@@ -101,6 +115,7 @@ scene:
   bg_sphere_dist: 5.0
   clean_pcd: false
   opt_start_iter: -1
+
   lr:
     percent_dense: 0.01
     spatial_scale: 1.0
@@ -112,6 +127,7 @@ scene:
     scaling: 0.005
     rotation: 0.001
     feature: 0.0025
+
   percent_dense: 0.01
   densification_interval: 100
   opacity_reset_interval: 20000
@@ -120,6 +136,7 @@ scene:
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   max_n_gaussians: 2097152
+
   loss:
     ssim_w: 0.2
     l1_w: 0.8

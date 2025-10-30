@@ -4,3 +4,4 @@
 #
 
 from .neuman import NeumanDataset
+from .zju import ZJUMoCapDataset

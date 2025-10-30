@@ -190,10 +190,16 @@ class NeumanDataset(torch.utils.data.Dataset):
         clean_pcd=False,
         cloth_upper='tshirt',
         cloth_lower='pants',
+        cloth_dir='assets/snug',
+        dataset_path=None,
     ):
-        dataset_path = f"{NEUMAN_PATH}/{seq}"
-        # Cloth directory is always assets/snug/{seq}
-        self.cloth_dir = f"assets/snug/{seq}"
+        # Use default NEUMAN_PATH if not specified
+        if dataset_path is None:
+            dataset_path = NEUMAN_PATH
+        dataset_path = f"{dataset_path}/{seq}"
+        
+        # Cloth directory setup (configurable from yaml)
+        self.cloth_dir = f"{cloth_dir}/{seq}"
         self.cloth_upper = cloth_upper  # Upper garment type
         self.cloth_lower = cloth_lower  # Lower garment type
         print(f"[Dataset] Cloth config: upper='{cloth_upper}', lower='{cloth_lower}', dir='{self.cloth_dir}'")

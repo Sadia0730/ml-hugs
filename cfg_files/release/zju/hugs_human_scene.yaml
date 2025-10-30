@@ -1,7 +1,7 @@
 seed: 0
-mode: human
+mode: human_scene
 output_path: output
-exp_name: 20240303_1758_release_test
+exp_name: demo
 dataset_path: ''
 detect_anomaly: false
 debug: false
@@ -9,22 +9,22 @@ wandb: false
 eval: false
 bg_color: white
 dataset:
-  name: neuman
-  dataset_path: "data/neuman/dataset"  # Base path for dataset (full path: {dataset_path}/{seq})
-  seq: "citron"
-  cloth_upper: "tshirt"  # Upper garment: "tshirt", "top", "shirt", "hoodie", etc.
-  cloth_lower: "pants"   # Lower garment: "pants", "shorts", "skirt", etc.
+  name: zju
+  dataset_path: "data/zju_mocap/processed"  # Base path for dataset (full path: {dataset_path}/{seq})
+  seq: "387"       # Subject ID (e.g., "313", "377", "387")
+  cloth_upper: "top"     # Upper garment type (must match {frame:04d}_{type}.obj in cloth dir)
+  cloth_lower: "pants"   # Lower garment type
   cloth_dir: "assets/snug"  # Base directory for cloth meshes (frame-specific meshes in {cloth_dir}/{seq}/)
 train:
-  batch_size: 4
-  num_workers: 4
-  num_steps: 14998
-  save_ckpt_interval: 2000
-  val_interval: 1000
-  anim_interval: 15000
+  batch_size: 1
+  num_workers: 0
+  num_steps: 15000      # Total training iterations
+  save_ckpt_interval: 1000  # Save checkpoints every 1000 iters (from iter 14000+)
+  val_interval: 15000   # Validation runs at iters 2000 and 15000 (hardcoded in trainer)
+  anim_interval: 15000  # Animation at end
   optim_scene: true
   save_progress_images: false
-  progress_save_interval: 10
+  progress_save_interval: 10  # Not used for image saving; train images saved at 1000, 2000, 10000
 human:
   name: hugs_trimlp
   ckpt: null
@@ -79,18 +79,23 @@ human:
     l1_w: 0.8
     lpips_w: 1.0
     lbs_w: 1000.0
-    humansep_w: 0.0
-    num_patches: 8
-    patch_size: 256
+    cloth_sim_w: 1.0
+    cloth_arap_w: 0.5
+    cloth_mask_w: 1.0
+    humansep_w: 1.0
+    opacity_entropy_w: 0.0
+    tv_w: 0.01
+    num_patches: 4
+    patch_size: 128
     use_patches: 1
   densification_interval: 600
   opacity_reset_interval: 3000
   densify_from_iter: 3000
   densify_until_iter: 15000
   densify_grad_threshold: 0.0002
-  prune_min_opacity: 0.005
+  prune_min_opacity: 0.02
   densify_extent: 1.0
-  max_n_gaussians: 200000
+  max_n_gaussians: 524288
   percent_dense: 0.01
 scene:
   name: scene_gs
@@ -114,12 +119,13 @@ scene:
     feature: 0.0025
   percent_dense: 0.01
   densification_interval: 100
-  opacity_reset_interval: 20000
+  opacity_reset_interval: 30000
   densify_from_iter: 500
-  densify_until_iter: 15000
+  densify_until_iter: 20000
   densify_grad_threshold: 0.0002
-  prune_min_opacity: 0.005
+  prune_min_opacity: 0.03
   max_n_gaussians: 2097152
   loss:
     ssim_w: 0.2
     l1_w: 0.8
+

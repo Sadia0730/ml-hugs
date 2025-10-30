@@ -151,20 +151,20 @@ def get_train_dataset(cfg):
             clean_pcd=cfg.scene.clean_pcd,
             cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
             cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
-            cloth_dir=getattr(cfg.dataset, 'cloth_dir', 'assets/snug'),
-            dataset_path=getattr(cfg.dataset, 'dataset_path', None),
         )
     elif cfg.dataset.name == 'zju':
-        from hugs.datasets.zju import ZJUMoCapDataset
-        logger.info(f'Loading ZJU-MoCap dataset {cfg.dataset.seq}-train')
+        from hugs.datasets.zjumocap import ZJUMoCapDataset
+        logger.info(f'Loading ZJU-MoCap dataset {cfg.dataset.subject}-train (camera {cfg.dataset.camera_id})')
         dataset = ZJUMoCapDataset(
-            cfg.dataset.seq, 
-            split='train',
+            cfg.dataset.subject, 'train',
             render_mode=cfg.mode,
+            camera_id=getattr(cfg.dataset, 'camera_id', 0),
+            add_bg_points=cfg.scene.add_bg_points,
+            num_bg_points=cfg.scene.num_bg_points,
+            bg_sphere_dist=cfg.scene.bg_sphere_dist,
+            clean_pcd=cfg.scene.clean_pcd,
             cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
             cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
-            cloth_dir=getattr(cfg.dataset, 'cloth_dir', 'assets/snug'),
-            dataset_path=getattr(cfg.dataset, 'dataset_path', 'data/zju_mocap/processed'),
         )
     
     return dataset
@@ -177,20 +177,15 @@ def get_val_dataset(cfg):
             cfg.dataset.seq, 'val', cfg.mode,
             cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
             cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
-            cloth_dir=getattr(cfg.dataset, 'cloth_dir', 'assets/snug'),
-            dataset_path=getattr(cfg.dataset, 'dataset_path', None),
         )
     elif cfg.dataset.name == 'zju':
-        from hugs.datasets.zju import ZJUMoCapDataset
-        logger.info(f'Loading ZJU-MoCap dataset {cfg.dataset.seq}-val')
+        from hugs.datasets.zjumocap import ZJUMoCapDataset
+        logger.info(f'Loading ZJU-MoCap dataset {cfg.dataset.subject}-val (camera {cfg.dataset.camera_id})')
         dataset = ZJUMoCapDataset(
-            cfg.dataset.seq, 
-            split='val',
-            render_mode=cfg.mode,
+            cfg.dataset.subject, 'val', cfg.mode,
+            camera_id=getattr(cfg.dataset, 'camera_id', 0),
             cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
             cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
-            cloth_dir=getattr(cfg.dataset, 'cloth_dir', 'assets/snug'),
-            dataset_path=getattr(cfg.dataset, 'dataset_path', 'data/zju_mocap/processed'),
         )
    
     return dataset
@@ -203,8 +198,6 @@ def get_anim_dataset(cfg):
             cfg.dataset.seq, 'anim', cfg.mode,
             cloth_upper=getattr(cfg.dataset, 'cloth_upper', 'tshirt'),
             cloth_lower=getattr(cfg.dataset, 'cloth_lower', 'pants'),
-            cloth_dir=getattr(cfg.dataset, 'cloth_dir', 'assets/snug'),
-            dataset_path=getattr(cfg.dataset, 'dataset_path', None),
         )
     elif cfg.dataset.name == 'zju':
         dataset = None
