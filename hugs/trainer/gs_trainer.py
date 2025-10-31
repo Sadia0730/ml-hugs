@@ -23,6 +23,7 @@ from hugs.datasets.utils import (
 )
 from hugs.losses.utils import ssim
 from hugs.datasets import NeumanDataset
+from hugs.datasets.zju import ZJUDataset
 from hugs.losses.loss import HumanSceneLoss
 from hugs.models.hugs_trimlp import HUGS_TRIMLP
 from hugs.models.hugs_wo_trimlp import HUGS_WO_TRIMLP
@@ -45,6 +46,13 @@ def get_train_dataset(cfg):
             bg_sphere_dist=cfg.scene.bg_sphere_dist,
             clean_pcd=cfg.scene.clean_pcd,
         )
+    elif cfg.dataset.name == 'zju':
+        logger.info(f'Loading ZJU-MoCap dataset {cfg.dataset.seq}-train')
+        dataset = ZJUDataset(
+            cfg.dataset.seq, 
+            split='train',
+            render_mode=cfg.mode,
+        )
     
     return dataset
 
@@ -53,6 +61,13 @@ def get_val_dataset(cfg):
     if cfg.dataset.name == 'neuman':
         logger.info(f'Loading NeuMan dataset {cfg.dataset.seq}-val')
         dataset = NeumanDataset(cfg.dataset.seq, 'val', cfg.mode)
+    elif cfg.dataset.name == 'zju':
+        logger.info(f'Loading ZJU-MoCap dataset {cfg.dataset.seq}-val')
+        dataset = ZJUDataset(
+            cfg.dataset.seq, 
+            split='val',
+            render_mode=cfg.mode,
+        )
    
     return dataset
 
