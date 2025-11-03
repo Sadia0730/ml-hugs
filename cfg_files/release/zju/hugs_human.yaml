@@ -1,7 +1,7 @@
 seed: 0
 mode: human
 output_path: output
-exp_name: zju_387_train
+exp_name: cloth_zju_377_train
 dataset_path: ''
 detect_anomaly: false
 debug: false
@@ -12,20 +12,20 @@ bg_color: white
 dataset:
   name: zju              # <— your loader class ZJUMoCapDataset
   dataset_path: "data/zju_mocap/processed"  # Base path for dataset (full path: {dataset_path}/{seq})
-  seq: "387"             # <— subject ID you processed
+  seq: "377"             # <— subject ID you processed
   split: train           # or val / animation
   render_mode: human
-  cloth_upper: "top"     # Upper garment type (must match {frame:04d}_{type}.obj in cloth dir)
-  cloth_lower: "pants"   # Lower garment type
+  cloth_upper: "tank"     # Upper garment type (must match {frame:04d}_{type}.obj in cloth dir)
+  cloth_lower: "shorts"   # Lower garment type
   cloth_dir: "assets/snug"  # Base directory for cloth meshes (frame-specific meshes in {cloth_dir}/{seq}/)
 
 train:
   batch_size: 4
   num_workers: 4
-  num_steps: 15000
+  num_steps: 20000
   save_ckpt_interval: 2000
   val_interval: 1000
-  anim_interval: 15000
+  anim_interval: 20000
   optim_scene: true
   save_progress_images: false
   progress_save_interval: 10
@@ -99,7 +99,7 @@ human:
   densification_interval: 600
   opacity_reset_interval: 3000
   densify_from_iter: 3000
-  densify_until_iter: 15000
+  densify_until_iter: 20000
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   densify_extent: 1.0
@@ -132,7 +132,7 @@ scene:
   densification_interval: 100
   opacity_reset_interval: 20000
   densify_from_iter: 500
-  densify_until_iter: 15000
+  densify_until_iter: 20000
   densify_grad_threshold: 0.0002
   prune_min_opacity: 0.005
   max_n_gaussians: 2097152

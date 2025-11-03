@@ -11,7 +11,7 @@ import trimesh
 
 # from hugs.smplx import SMPL
 from hugs.models.modules.smpl_layer import SMPL
-from hugs.utils.graphics import get_projection_matrix
+from hugs.utils.graphics import get_projection_matrix_center
 
 
 
@@ -160,7 +160,7 @@ class ZJUMoCapDataset(torch.utils.data.Dataset):
         znear = 0.01
         
         world_view_transform = w2c.T
-        projection_matrix = get_projection_matrix(znear, zfar, fovx, fovy).transpose(0,1)
+        projection_matrix = get_projection_matrix_center(znear, zfar, K[0, 0], K[1, 1], K[0, 2], K[1, 2], width, height).transpose(0,1)
         full_proj_transform = (world_view_transform.unsqueeze(0).bmm(projection_matrix.unsqueeze(0))).squeeze(0)
         camera_center = world_view_transform.inverse()[3, :3]
 
