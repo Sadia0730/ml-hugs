@@ -25,6 +25,7 @@ class HumanSceneLoss(nn.Module):
         l_cloth_sim_w=0.0,
         l_cloth_arap_w=0.0,
         l_cloth_mask_w=0.0,
+        l_cloth_lbs_w=None,  # If None, uses l_lbs_w for backward compatibility
         l_opacity_entropy_w=0.0,
         l_tv_w=0.0,
         num_patches=4,
@@ -42,6 +43,8 @@ class HumanSceneLoss(nn.Module):
         self.l_cloth_sim_w = l_cloth_sim_w
         self.l_cloth_arap_w = l_cloth_arap_w
         self.l_cloth_mask_w = l_cloth_mask_w
+        # Use separate cloth LBS weight if provided, otherwise fallback to body LBS weight
+        self.l_cloth_lbs_w = l_cloth_lbs_w if l_cloth_lbs_w is not None else l_lbs_w
         self.l_opacity_entropy_w = l_opacity_entropy_w
         self.l_tv_w = l_tv_w
         self.use_patches = use_patches
@@ -177,13 +180,14 @@ class HumanSceneLoss(nn.Module):
             cloth_edges = human_gs_init_values.get("cloth_edges", None) if human_gs_init_values else None
 
             # === Cloth LBS Regularization Loss ===
-            if self.l_lbs_w > 0.0 and "lbs_weights" in cloth_gs_out and cloth_gs_out["lbs_weights"] is not None:
+            # Use separate cloth LBS weight (self.l_cloth_lbs_w) instead of body LBS weight
+            if self.l_cloth_lbs_w > 0.0 and "lbs_weights" in cloth_gs_out and cloth_gs_out["lbs_weights"] is not None:
                 if "gt_lbs_weights" in cloth_gs_out and cloth_gs_out["gt_lbs_weights"] is not None:
                     loss_cloth_lbs = F.mse_loss(
                         cloth_gs_out["lbs_weights"], 
                         cloth_gs_out["gt_lbs_weights"].detach()
                     ).mean()
-                    loss_dict["cloth_lbs"] = self.l_lbs_w * loss_cloth_lbs
+                    loss_dict["cloth_lbs"] = self.l_cloth_lbs_w * loss_cloth_lbs
                 else:
                     # Fallback: Skip cloth LBS regularization if GT weights unavailable
                     # Using body LBS weights for cloth would be incorrect due to different topologies

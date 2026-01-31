@@ -9,11 +9,26 @@ import os
 import subprocess
 import sys
 import time
+
+sys.path.append('.')
+
+# Parse GPU argument FIRST, before any other imports that might use torch
+# This must happen before importing torch or any module that imports torch
+if '--gpu' in sys.argv:
+    gpu_idx = sys.argv.index('--gpu')
+    if gpu_idx + 1 < len(sys.argv):
+        gpu_id = sys.argv[gpu_idx + 1]
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        print(f'[GPU Config] Using GPU: {gpu_id} (set before imports)')
+    else:
+        print('[GPU Config] --gpu flag provided but no GPU ID specified')
+else:
+    print('[GPU Config] Using default GPU (CUDA_VISIBLE_DEVICES not set)')
+
+# Now safe to import other modules
 import argparse
 from loguru import logger
 from omegaconf import OmegaConf
-
-sys.path.append('.')
 
 from hugs.trainer import GaussianTrainer
 from hugs.utils.config import get_cfg_items
@@ -62,6 +77,15 @@ def main(cfg):
     # create loggers
     get_logger(cfg)
     
+    # Ensure we're using the correct GPU (if CUDA_VISIBLE_DEVICES was set)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            actual_device = torch.cuda.current_device()
+            logger.info(f'PyTorch is using CUDA device: {actual_device}')
+    except:
+        pass
+    
     # get trainer
     trainer = GaussianTrainer(cfg)
     
@@ -87,7 +111,11 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--cfg_file", required=True, help="path to the yaml config file")
     parser.add_argument("--cfg_id", type=int, default=-1, help="id of the config to run")
+    parser.add_argument("--gpu", type=int, default=None, help="GPU device ID to use (e.g., --gpu 2)")
     args, extras = parser.parse_known_args()
+    
+    # GPU was already set earlier (before imports) for CUDA_VISIBLE_DEVICES
+    # This argument parsing is just for logging/documentation
     
     cfg_file = OmegaConf.load(args.cfg_file)
     list_of_cfgs, hyperparam_search_keys = get_cfg_items(cfg_file)

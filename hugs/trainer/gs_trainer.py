@@ -343,6 +343,7 @@ class GaussianTrainer():
                 l_cloth_sim_w=getattr(l, "cloth_sim_w", 0.0),
                 l_cloth_arap_w=getattr(l, "cloth_arap_w", 0.0),
                 l_cloth_mask_w=getattr(l, "cloth_mask_w", 0.0),
+                l_cloth_lbs_w=getattr(l, "cloth_lbs_w", None),  # If not specified, uses l_lbs_w
                 l_opacity_entropy_w=getattr(l, "opacity_entropy_w", 0.0),
                 l_tv_w=getattr(l, "tv_w", 0.0),
                 num_patches=l.num_patches,
