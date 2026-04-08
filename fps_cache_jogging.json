@@ -1,0 +1,19 @@
+{
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "n_frames": 200,
+  "mode": "cache_triplane",
+  "body_gaussians": 381383,
+  "cloth_gaussians": 8594,
+  "rendering_fps": {
+    "ms": 3.255225274562836,
+    "fps": 307.1984012333205
+  },
+  "lbs_ms": {
+    "ms": 13.7782182264328,
+    "fps": 72.57832497394703
+  },
+  "full_iter_fps": {
+    "ms": 17.036258699972677,
+    "fps": 58.69833380738717
+  }
+}

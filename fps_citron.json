@@ -1,0 +1,32 @@
+{
+  "gpu": "NVIDIA L40S",
+  "gpu_vram_gb": 44.4,
+  "mode": "inference-only (torch.no_grad, no backward pass)",
+  "n_frames_timed": 200,
+  "body_gaussians": 545703,
+  "cloth_gaussians": 8761,
+  "triplane_decode": {
+    "ms": 34.497751026153566,
+    "fps": 28.98739686659215
+  },
+  "lbs_deformation": {
+    "ms": 26.37401678085327,
+    "fps": 37.91610539680742
+  },
+  "rendering_fps": {
+    "ms": 3.7878684878349302,
+    "fps": 264.00071787380875
+  },
+  "full_pipeline": {
+    "ms": 84.82170879364014,
+    "fps": 11.789434735780507
+  },
+  "cloth_forward": {
+    "ms": 12.248934779167175,
+    "fps": 81.63975219304675
+  },
+  "cloth_render_passes": {
+    "ms": 7.416233108043671,
+    "fps": 134.839343023805
+  }
+}
