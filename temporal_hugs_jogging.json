@@ -1,0 +1,18 @@
+{
+  "sequence": "neuman/jogging",
+  "n_pairs": 9,
+  "tof_full_mean": 0.025470072351810005,
+  "tof_full_std": 0.014560353661906004,
+  "ewarp_full_mean": 0.007593117743182944,
+  "ewarp_full_std": 0.003854215775511164,
+  "flicker_residual_std": 0.046536706387996674,
+  "gt_warp_baseline": 0.17826516098446316,
+  "tof_masked_mean": 0.2140957407679023,
+  "tof_masked_std": 0.059735010148063546,
+  "ewarp_masked_mean": 0.14345744748210126,
+  "ewarp_masked_std": 0.060014565250191186,
+  "tlp_mean": 0.11815746045774883,
+  "tlp_std": 0.05599657039050872,
+  "splat_accel_mean": 0.47382551431655884,
+  "splat_accel_p95": 1.2610604763031006
+}

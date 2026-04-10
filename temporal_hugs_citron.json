@@ -1,0 +1,18 @@
+{
+  "sequence": "neuman/citron",
+  "n_pairs": 2,
+  "tof_full_mean": 0.026209456846117973,
+  "tof_full_std": 0.0005286652594804764,
+  "ewarp_full_mean": 0.003978655848910977,
+  "ewarp_full_std": 3.9092573087711954e-05,
+  "flicker_residual_std": 0.024788029491901398,
+  "gt_warp_baseline": 0.2158844769001007,
+  "tof_masked_mean": 0.2502098812262922,
+  "tof_masked_std": 0.005477348758252953,
+  "ewarp_masked_mean": 0.21492458259557867,
+  "ewarp_masked_std": 0.12301701299301997,
+  "tlp_mean": 0.14963700622320175,
+  "tlp_std": 0.006144486367702484,
+  "splat_accel_mean": 1.515707015991211,
+  "splat_accel_p95": 2.2880284786224365
+}
