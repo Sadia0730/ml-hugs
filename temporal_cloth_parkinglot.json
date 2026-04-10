@@ -1,0 +1,18 @@
+{
+  "sequence": "neuman/parkinglot",
+  "n_pairs": 3,
+  "tof_full_mean": 0.020137838398416836,
+  "tof_full_std": 0.0006942316204627048,
+  "ewarp_full_mean": 0.003128640350319582,
+  "ewarp_full_std": 0.0010334357378310882,
+  "flicker_residual_std": 0.02411036007106304,
+  "gt_warp_baseline": 0.10195177048444748,
+  "tof_masked_mean": 0.14720346159687528,
+  "tof_masked_std": 0.014028429030175081,
+  "ewarp_masked_mean": 0.10768763941176508,
+  "ewarp_masked_std": 0.0886195427645165,
+  "tlp_mean": 0.13219508280356726,
+  "tlp_std": 0.02013186618975302,
+  "splat_accel_mean": 2.2224488258361816,
+  "splat_accel_p95": 3.7322397232055664
+}

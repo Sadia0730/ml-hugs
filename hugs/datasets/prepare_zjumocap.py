@@ -1,8 +1,8 @@
 import os
 import sys
 
-# Allow running this file directly (e.g. `python hugs/tools/prepare_zjumocap.py`)
-# by ensuring the repo root is on sys.path for `import hugs.*`.
+# Allow running this file directly by ensuring the repo root is on sys.path
+# (so `import hugs.*` works when invoked by path).
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -15,9 +15,7 @@ import numpy as np
 from tqdm import tqdm
 from PIL import Image
 
-# from hugs.smplx import SMPL
-from hugs.models.modules.smpl_layer import SMPL
-
+from hugs.smplx import SMPL
 from hugs.utils.render import overlay_smpl_3dgs
 
 MODEL_DIR = 'data/smpl'
@@ -87,7 +85,6 @@ def apply_global_tfm_to_camera(E, Rh, Th):
 def get_single_view_results(subject, subject_dir, smpl_params_dir, select_view,
                             out_img_dir, out_mask_dir, out_smpl_dir,
                             max_frames, gender='neutral', render=False):
-    print(f"[DEBUG] Processing view {select_view}")
     anno_path = os.path.join(subject_dir, 'annots.npy')
     annots = np.load(anno_path, allow_pickle=True).item()
     
@@ -233,14 +230,8 @@ def main(args):
     out_smpl_dir = prepare_dir(output_path, 'smpl_render')
     os.makedirs(out_smpl_dir, exist_ok=True)
     
-    # Some ZJU subjects have fewer than 23 cameras. Discover the count from annots.npy.
-    anno_path = os.path.join(subject_dir, 'annots.npy')
-    annots = np.load(anno_path, allow_pickle=True).item()
-    n_views = len(annots['cams']['K'])
-
     smpl_params_out, cameras = {}, {}
-    for view in tqdm(range(n_views), 'Processing views:'):
-        print(f"[DEBUG] Starting preprocessing for subject {subject}")
+    for view in tqdm(range(0, 23), 'Processing views:'):
         smpl_params, cams = get_single_view_results(
             subject, subject_dir, smpl_params_dir, view, 
             out_img_dir, out_mask_dir, out_smpl_dir, max_frames, gender=gender,
@@ -261,9 +252,20 @@ if __name__ == '__main__':
     parser.add_argument('--render', action='store_true')
     args = parser.parse_args()
     print(args)
-
-    # `--max_frames` is the authoritative setting. If left at -1, process all.
-    # (The previous version used a hard-coded subject->frame-count table.)
+    
+    mf = {
+        '377': 570, 
+        '386': 540, 
+        '387': 540, 
+        '392': -1, 
+        '393': -1, 
+        '394': 475,
+    }
     if args.subject == 'all':
-        raise ValueError("Please pass a specific --subject (e.g. 313).")
-    main(args)
+        for subject in mf.keys():
+            args.subject = subject
+            args.max_frames = mf[args.subject]
+            main(args)
+    else:
+        args.max_frames = mf[args.subject]
+        main(args)

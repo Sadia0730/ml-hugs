@@ -1,0 +1,18 @@
+{
+  "sequence": "zju/392",
+  "n_pairs": 50,
+  "tof_full_mean": 0.011315147103741765,
+  "tof_full_std": 0.002295315730162074,
+  "ewarp_full_mean": 0.004275152082230735,
+  "ewarp_full_std": 0.002160421186734869,
+  "flicker_residual_std": 0.024802790954709053,
+  "gt_warp_baseline": 0.013314994424581528,
+  "tof_masked_mean": 0.11281255018243445,
+  "tof_masked_std": 0.015525657510115223,
+  "ewarp_masked_mean": 0.071422346931162,
+  "ewarp_masked_std": 0.013215900711053243,
+  "tlp_mean": 0.10602659374475479,
+  "tlp_std": 0.021381399091207398,
+  "splat_accel_mean": 0.3374234139919281,
+  "splat_accel_p95": 1.0813876390457153
+}

@@ -1,0 +1,18 @@
+{
+  "sequence": "neuman/seattle",
+  "n_pairs": 3,
+  "tof_full_mean": 0.022674771025776863,
+  "tof_full_std": 0.005362379826022556,
+  "ewarp_full_mean": 0.003635990162154661,
+  "ewarp_full_std": 0.00032241781716902074,
+  "flicker_residual_std": 0.02638368308544159,
+  "gt_warp_baseline": 0.16495313743750253,
+  "tof_masked_mean": 0.28930887577748776,
+  "tof_masked_std": 0.03828785891004184,
+  "ewarp_masked_mean": 0.2039294967123635,
+  "ewarp_masked_std": 0.06022667597043623,
+  "tlp_mean": 0.11891582608222961,
+  "tlp_std": 0.026417461277499915,
+  "splat_accel_mean": 2.093259572982788,
+  "splat_accel_p95": 2.6698977947235107
+}

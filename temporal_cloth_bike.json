@@ -1,0 +1,18 @@
+{
+  "sequence": "neuman/bike",
+  "n_pairs": 9,
+  "tof_full_mean": 0.02420523079733054,
+  "tof_full_std": 0.006458381449953998,
+  "ewarp_full_mean": 0.0058145150592164106,
+  "ewarp_full_std": 0.0013304388624229837,
+  "flicker_residual_std": 0.04065109044313431,
+  "gt_warp_baseline": 0.1523062065243721,
+  "tof_masked_mean": 0.1697362246819473,
+  "tof_masked_std": 0.024478917788266087,
+  "ewarp_masked_mean": 0.06913193073541275,
+  "ewarp_masked_std": 0.01095598689387052,
+  "tlp_mean": 0.13505221241050297,
+  "tlp_std": 0.029579386923307062,
+  "splat_accel_mean": 0.785747230052948,
+  "splat_accel_p95": 1.4744430780410767
+}
