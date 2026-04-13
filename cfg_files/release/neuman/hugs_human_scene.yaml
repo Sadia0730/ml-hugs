@@ -11,7 +11,7 @@ bg_color: white
 dataset:
   name: neuman
   dataset_path: "data/neuman/dataset"  # Base path for dataset (full path: {dataset_path}/{seq})
-  seq: "bike"
+  seq: "seattle"
   cloth_upper: "top"  # Upper garment: "tshirt", "top", "shirt", "hoodie", etc.
   cloth_lower: "pants"   # Lower garment: "pants", "shorts", "skirt", etc.
   cloth_dir: "assets/snug"  # Base directory for cloth meshes (frame-specific meshes in {cloth_dir}/{seq}/)

@@ -36,6 +36,61 @@ from .modules.smpl_layer import SMPL
 SCALE_Z = 1e-5
 
 
+def precompute_lbs_knn(lbs_weights, points, template_points, K=6):
+    """Precompute pose-independent KNN indices and blend weights for LBS.
+
+    The canonical Gaussian positions (points) and SMPL template verts
+    (template_points) are static at inference. Only the per-frame SMPL
+    joint transforms change. Calling this once and reusing the result in
+    smpl_lbsmap_from_cache() skips the KNN step every frame.
+
+    Returns:
+        neighbs        : LongTensor [1, N, K]   KNN indices into template
+        blend_weights  : FloatTensor [1, N, K]  normalised blend weights
+    """
+    with torch.no_grad():
+        results = knn_points(points, template_points, K=K)
+        dists, idxs = results.dists, results.idx
+        n_rows = lbs_weights.shape[0]
+        if idxs.max() >= n_rows:
+            idxs = idxs.clamp_max(n_rows - 1)
+
+        weight_std2 = 2. * (0.1 ** 2)
+        xyz_neighbs_lbs_weight = lbs_weights[idxs]
+        weight_conf = torch.exp(
+            -torch.sum(
+                torch.abs(xyz_neighbs_lbs_weight - xyz_neighbs_lbs_weight[..., 0:1, :]),
+                dim=-1,
+            ) / weight_std2
+        )
+        weight_conf = torch.gt(weight_conf, 0.9).float()
+        blend_w = torch.exp(-dists) * weight_conf
+        blend_w = blend_w / blend_w.sum(-1, keepdim=True)
+
+    return idxs, blend_w
+
+
+def smpl_lbsmap_from_cache(verts_transform, neighbs, blend_weights):
+    """Fast per-frame LBS using precomputed KNN results.
+
+    Only performs the transform lookup and weighted blend — no KNN.
+    Replaces smpl_lbsmap_top_k() for inference.
+
+    Args:
+        verts_transform : [1, V, 4, 4]  per-vertex SMPL transforms (changes each frame)
+        neighbs         : [1, N, K]     KNN indices (precomputed, static)
+        blend_weights   : [1, N, K]     blend weights (precomputed, static)
+
+    Returns:
+        xyz_transform : [1, N, 4, 4]
+    """
+    xyz_neighbs_transform = batch_index_select(verts_transform, neighbs)  # [1, N, K, 4, 4]
+    xyz_transform = torch.sum(
+        blend_weights.unsqueeze(-1).unsqueeze(-1) * xyz_neighbs_transform, dim=2
+    )  # [1, N, 4, 4]
+    return xyz_transform
+
+
 def batch_index_select(data, inds):
     bs, nv = data.shape[:2]
     device = data.device

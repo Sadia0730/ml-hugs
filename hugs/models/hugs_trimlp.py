@@ -8,7 +8,10 @@ import trimesh
 from torch import nn
 from loguru import logger
 import torch.nn.functional as F
-from hugs.models.hugs_wo_trimlp import smpl_lbsmap_top_k, smpl_lbsweight_top_k
+from hugs.models.hugs_wo_trimlp import (
+    smpl_lbsmap_top_k, smpl_lbsweight_top_k,
+    precompute_lbs_knn, smpl_lbsmap_from_cache,
+)
 
 from hugs.utils.general import (
     inverse_sigmoid, 
@@ -516,37 +519,160 @@ class HUGS_TRIMLP:
          
     def forward_body(
         self,
-        global_orient=None, 
-        body_pose=None, 
-        betas=None, 
-        transl=None, 
+        global_orient=None,
+        body_pose=None,
+        betas=None,
+        transl=None,
         smpl_scale=None,
         dataset_idx=-1,
         is_train=False,
         ext_tfs=None,
     ):
-        
+        # ── Fast cached path: skip all triplane/decoder/weight recomputation ──
+        if hasattr(self, '_cache_W'):
+            gs_xyz         = self._cache_gs_xyz
+            gs_rotmat      = self._cache_gs_rotmat
+            gs_rotq        = self._cache_gs_rotq
+            gs_rot6d       = self._cache_gs_rot6d
+            gs_scales      = self._cache_gs_scales
+            gs_scales_canon = self._cache_gs_scales_canon
+            gs_shs         = self._cache_gs_shs
+            gs_opacity     = self._cache_gs_opacity
+            xyz_offsets    = self._cache_xyz_offsets
+            lbs_weights    = self._cache_lbs_weights
+            posedirs       = self._cache_posedirs
+            W              = self._cache_W              # [1, N, J]
+            gs_xyz_homo    = self._cache_gs_xyz_homo
+
+            if hasattr(self, 'global_orient') and global_orient is None:
+                global_orient = rotation_6d_to_axis_angle(
+                    self.global_orient[dataset_idx].reshape(-1, 6)).reshape(3)
+            if hasattr(self, 'body_pose') and body_pose is None:
+                body_pose = rotation_6d_to_axis_angle(
+                    self.body_pose[dataset_idx].reshape(-1, 6)).reshape(23*3)
+            if hasattr(self, 'betas') and betas is None:
+                betas = self.betas
+            if hasattr(self, 'transl') and transl is None:
+                transl = self.transl[dataset_idx]
+
+            smpl_output = self.smpl(
+                betas=betas.unsqueeze(0),
+                body_pose=body_pose.unsqueeze(0),
+                global_orient=global_orient.unsqueeze(0),
+                disable_posedirs=False,
+                return_full_pose=True,
+            )
+
+            if self.use_deformer:
+                # Only pose-dependent part: pose_offsets via posedirs, then T = W @ A
+                A_t2pose = smpl_output.A[0]
+                A_vitruvian2pose = A_t2pose @ self.inv_A_t2vitruvian  # [J, 4, 4]
+                num_joints = A_vitruvian2pose.shape[0]
+
+                if not self.disable_posedirs:
+                    from smplx.lbs import batch_rodrigues
+                    ident = torch.eye(3, dtype=A_vitruvian2pose.dtype, device=A_vitruvian2pose.device)
+                    rot_mats = batch_rodrigues(smpl_output.full_pose.view(-1, 3)).view(1, -1, 3, 3)
+                    pose_feature = (rot_mats[:, 1:, :, :] - ident).view(1, -1)
+                    pose_offsets = torch.matmul(pose_feature, posedirs).view(1, -1, 3)
+                    v_posed = gs_xyz.unsqueeze(0) + pose_offsets  # [1, N, 3]
+                else:
+                    v_posed = gs_xyz.unsqueeze(0)
+
+                # T = W @ A  (the only heavy op left — but W is already cached)
+                T = torch.matmul(W, A_vitruvian2pose.view(1, num_joints, 16)).view(1, -1, 4, 4)
+
+                homogen_coord = torch.ones([1, v_posed.shape[1], 1],
+                                           dtype=v_posed.dtype, device=v_posed.device)
+                v_posed_homo = torch.cat([v_posed, homogen_coord], dim=2)
+                v_homo = torch.matmul(T, v_posed_homo.unsqueeze(-1))
+                deformed_xyz = v_homo[:, :, :3, 0].squeeze(0)
+                lbs_T = T.squeeze(0)
+            else:
+                curr_offsets = (smpl_output.shape_offsets + smpl_output.pose_offsets)[0]
+                T_t2pose = smpl_output.T[0]
+                T_vitruvian2t = self.inv_T_t2vitruvian.clone()
+                T_vitruvian2t[..., :3, 3] = T_vitruvian2t[..., :3, 3] + self.canonical_offsets - curr_offsets
+                T_vitruvian2pose = T_t2pose @ T_vitruvian2t
+                if hasattr(self, '_lbs_cache_neighbs'):
+                    lbs_T = smpl_lbsmap_from_cache(
+                        verts_transform=T_vitruvian2pose.unsqueeze(0),
+                        neighbs=self._lbs_cache_neighbs,
+                        blend_weights=self._lbs_cache_blend_w,
+                    ).squeeze(0)
+                else:
+                    _, lbs_T = smpl_lbsmap_top_k(
+                        lbs_weights=self.smpl.lbs_weights,
+                        verts_transform=T_vitruvian2pose.unsqueeze(0),
+                        points=gs_xyz.unsqueeze(0),
+                        template_points=self.vitruvian_verts.unsqueeze(0),
+                        K=6,
+                    )
+                    lbs_T = lbs_T.squeeze(0)
+                deformed_xyz = torch.matmul(lbs_T, gs_xyz_homo.unsqueeze(-1))[..., :3, 0]
+
+            if smpl_scale is not None:
+                deformed_xyz = deformed_xyz * smpl_scale.unsqueeze(0)
+                gs_scales = gs_scales * smpl_scale.unsqueeze(0)
+            if transl is not None:
+                deformed_xyz = deformed_xyz + transl.unsqueeze(0)
+
+            deformed_gs_rotmat = lbs_T[:, :3, :3] @ gs_rotmat
+            deformed_gs_rotq = matrix_to_quaternion(deformed_gs_rotmat)
+
+            if ext_tfs is not None:
+                tr, rotmat, sc = ext_tfs
+                deformed_xyz = (tr[..., None] + (sc[None] * (rotmat @ deformed_xyz[..., None]))).squeeze(-1)
+                gs_scales = sc * gs_scales
+                rotq = matrix_to_quaternion(rotmat)
+                deformed_gs_rotq = quaternion_multiply(rotq, deformed_gs_rotq)
+                deformed_gs_rotmat = quaternion_to_matrix(deformed_gs_rotq)
+
+            deformed_normals = (deformed_gs_rotmat @ self._cache_normals.unsqueeze(-1)).squeeze(-1)
+
+            return {
+                'xyz': deformed_xyz,
+                'xyz_canon': gs_xyz,
+                'xyz_offsets': xyz_offsets,
+                'scales': gs_scales,
+                'scales_canon': gs_scales_canon,
+                'rotq': deformed_gs_rotq,
+                'rotq_canon': gs_rotq,
+                'rotmat': deformed_gs_rotmat,
+                'rotmat_canon': gs_rotmat,
+                'shs': gs_shs,
+                'opacity': gs_opacity,
+                'normals': deformed_normals,
+                'normals_canon': self._cache_canon_normals,
+                'active_sh_degree': self.active_sh_degree,
+                'rot6d_canon': gs_rot6d,
+                'lbs_weights': lbs_weights,
+                'posedirs': posedirs,
+                'gt_lbs_weights': None,
+            }
+
+        # ── Standard (non-cached) path ────────────────────────────────────────
         tri_feats = self.triplane(self.get_xyz)
         appearance_out = self.appearance_dec(tri_feats)
         geometry_out = self.geometry_dec(tri_feats)
-        
+
         xyz_offsets = geometry_out['xyz']
         gs_rot6d = geometry_out['rotations']
         gs_scales = geometry_out['scales'] * self.scaling_multiplier
-        
+
         gs_xyz = self.get_xyz + xyz_offsets
-        
+
         gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
         gs_rotq = matrix_to_quaternion(gs_rotmat)
 
         gs_opacity = appearance_out['opacity']
         gs_shs = appearance_out['shs'].reshape(-1, 16, 3)
-        
+
         if self.isotropic:
             gs_scales = torch.ones_like(gs_scales) * torch.mean(gs_scales, dim=-1, keepdim=True)
-            
+
         gs_scales_canon = gs_scales.clone()
-        
+
         if self.use_deformer:
             deformation_out = self.deformation_dec(tri_feats)
             lbs_weights = deformation_out['lbs_weights']
@@ -559,23 +685,22 @@ class HUGS_TRIMLP:
         else:
             lbs_weights = None
             posedirs = None
-        
+
         if hasattr(self, 'global_orient') and global_orient is None:
             global_orient = rotation_6d_to_axis_angle(
                 self.global_orient[dataset_idx].reshape(-1, 6)).reshape(3)
-        
+
         if hasattr(self, 'body_pose') and body_pose is None:
             body_pose = rotation_6d_to_axis_angle(
                 self.body_pose[dataset_idx].reshape(-1, 6)).reshape(23*3)
-            
+
         if hasattr(self, 'betas') and betas is None:
             betas = self.betas
-            
+
         if hasattr(self, 'transl') and transl is None:
             transl = self.transl[dataset_idx]
-        
+
         # vitruvian -> t-pose -> posed
-        # remove and reapply the blendshape
         smpl_output = self.smpl(
             betas=betas.unsqueeze(0),
             body_pose=body_pose.unsqueeze(0),
@@ -583,21 +708,19 @@ class HUGS_TRIMLP:
             disable_posedirs=False,
             return_full_pose=True,
         )
-        
+
         gt_lbs_weights = None
         if self.use_deformer:
             A_t2pose = smpl_output.A[0]
             A_vitruvian2pose = A_t2pose @ self.inv_A_t2vitruvian
             deformed_xyz, _, lbs_T, _, _ = lbs_extra(
-                A_vitruvian2pose[None], gs_xyz[None], posedirs, lbs_weights, 
+                A_vitruvian2pose[None], gs_xyz[None], posedirs, lbs_weights,
                 smpl_output.full_pose, disable_posedirs=self.disable_posedirs, pose2rot=True
             )
             deformed_xyz = deformed_xyz.squeeze(0)
             lbs_T = lbs_T.squeeze(0)
 
             with torch.no_grad():
-                # gt lbs is needed for lbs regularization loss
-                # predicted lbs should be close to gt lbs
                 _, gt_lbs_weights = smpl_lbsweight_top_k(
                     lbs_weights=self.smpl.lbs_weights,
                     points=gs_xyz.unsqueeze(0),
@@ -615,46 +738,53 @@ class HUGS_TRIMLP:
             T_vitruvian2t[..., :3, 3] = T_vitruvian2t[..., :3, 3] + self.canonical_offsets - curr_offsets
             T_vitruvian2pose = T_t2pose @ T_vitruvian2t
 
-            _, lbs_T = smpl_lbsmap_top_k(
-                lbs_weights=self.smpl.lbs_weights,
-                verts_transform=T_vitruvian2pose.unsqueeze(0),
-                points=gs_xyz.unsqueeze(0),
-                template_points=self.vitruvian_verts.unsqueeze(0),
-                K=6,
-            )
-            lbs_T = lbs_T.squeeze(0)
-        
+            if hasattr(self, '_lbs_cache_neighbs'):
+                lbs_T = smpl_lbsmap_from_cache(
+                    verts_transform=T_vitruvian2pose.unsqueeze(0),
+                    neighbs=self._lbs_cache_neighbs,
+                    blend_weights=self._lbs_cache_blend_w,
+                ).squeeze(0)
+            else:
+                _, lbs_T = smpl_lbsmap_top_k(
+                    lbs_weights=self.smpl.lbs_weights,
+                    verts_transform=T_vitruvian2pose.unsqueeze(0),
+                    points=gs_xyz.unsqueeze(0),
+                    template_points=self.vitruvian_verts.unsqueeze(0),
+                    K=6,
+                )
+                lbs_T = lbs_T.squeeze(0)
+
             homogen_coord = torch.ones_like(gs_xyz[..., :1])
             gs_xyz_homo = torch.cat([gs_xyz, homogen_coord], dim=-1)
             deformed_xyz = torch.matmul(lbs_T, gs_xyz_homo.unsqueeze(-1))[..., :3, 0]
-        
+
         if smpl_scale is not None:
             deformed_xyz = deformed_xyz * smpl_scale.unsqueeze(0)
             gs_scales = gs_scales * smpl_scale.unsqueeze(0)
-        
+
         if transl is not None:
             deformed_xyz = deformed_xyz + transl.unsqueeze(0)
-        
+
         deformed_gs_rotmat = lbs_T[:, :3, :3] @ gs_rotmat
         deformed_gs_rotq = matrix_to_quaternion(deformed_gs_rotmat)
-        
+
         if ext_tfs is not None:
             tr, rotmat, sc = ext_tfs
             deformed_xyz = (tr[..., None] + (sc[None] * (rotmat @ deformed_xyz[..., None]))).squeeze(-1)
             gs_scales = sc * gs_scales
-            
+
             rotq = matrix_to_quaternion(rotmat)
             deformed_gs_rotq = quaternion_multiply(rotq, deformed_gs_rotq)
             deformed_gs_rotmat = quaternion_to_matrix(deformed_gs_rotq)
-        
+
         self.normals = torch.zeros_like(gs_xyz)
         self.normals[:, 2] = 1.0
-        
+
         canon_normals = (gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
         deformed_normals = (deformed_gs_rotmat @ self.normals.unsqueeze(-1)).squeeze(-1)
-        
+
         deformed_gs_shs = gs_shs.clone()
-        
+
         return {
             'xyz': deformed_xyz,
             'xyz_canon': gs_xyz,
@@ -676,12 +806,87 @@ class HUGS_TRIMLP:
             'gt_lbs_weights': gt_lbs_weights,
         }
 
+    def precompute_lbs_cache(self):
+        """Precompute ALL pose-independent quantities for cached inference.
+
+        Canonical Gaussian positions, triplane features, decoder outputs
+        (appearance, geometry, deformation) are all static at inference.
+        Only SMPL joint transforms (A) and full_pose change per frame.
+
+        Call once after model.eval() + triplane cache installed.
+        """
+        with torch.no_grad():
+            # --- triplane + decoders (already monkey-patched to return cached tensors,
+            #     but we call them once here to extract the actual values) ---
+            tri_feats = self.triplane(self.get_xyz)
+            appearance_out = self.appearance_dec(tri_feats)
+            geometry_out = self.geometry_dec(tri_feats)
+
+            xyz_offsets = geometry_out['xyz']
+            gs_rot6d = geometry_out['rotations']
+            gs_scales = geometry_out['scales'] * self.scaling_multiplier
+
+            gs_xyz = self.get_xyz + xyz_offsets
+            gs_rotmat = rotation_6d_to_matrix(gs_rot6d)
+            gs_rotq = matrix_to_quaternion(gs_rotmat)
+            gs_opacity = appearance_out['opacity']
+            gs_shs = appearance_out['shs'].reshape(-1, 16, 3)
+
+            if self.isotropic:
+                gs_scales = torch.ones_like(gs_scales) * torch.mean(gs_scales, dim=-1, keepdim=True)
+
+            gs_scales_canon = gs_scales.clone()
+
+            # normals (constant, based on canonical rotmat)
+            normals = torch.zeros_like(gs_xyz)
+            normals[:, 2] = 1.0
+            canon_normals = (gs_rotmat @ normals.unsqueeze(-1)).squeeze(-1)
+
+            if self.use_deformer:
+                deformation_out = self.deformation_dec(tri_feats)
+                lbs_weights = deformation_out['lbs_weights']
+                lbs_weights = F.softmax(lbs_weights / 0.1, dim=-1)
+                posedirs = deformation_out['posedirs']
+                # Precompute W = softmax(predicted lbs weights) expanded for batch matmul
+                # lbs_extra does: T = W @ A.view(1, J, 16)
+                # W shape: [1, N, J]  — constant, cache it
+                W = lbs_weights.unsqueeze(0)  # [1, N, J]
+            else:
+                lbs_weights = None
+                posedirs = None
+                W = None
+
+        # Store all pose-independent quantities
+        self._cache_gs_xyz = gs_xyz
+        self._cache_gs_rotmat = gs_rotmat
+        self._cache_gs_rotq = gs_rotq
+        self._cache_gs_rot6d = gs_rot6d
+        self._cache_gs_scales = gs_scales
+        self._cache_gs_scales_canon = gs_scales_canon
+        self._cache_gs_shs = gs_shs
+        self._cache_gs_opacity = gs_opacity
+        self._cache_xyz_offsets = xyz_offsets
+        self._cache_normals = normals
+        self._cache_canon_normals = canon_normals
+        self._cache_lbs_weights = lbs_weights
+        self._cache_posedirs = posedirs
+        self._cache_W = W  # [1, N, J] for fast skinning
+
+        # homogeneous coords for xyz (constant)
+        homogen_coord = torch.ones_like(gs_xyz[..., :1])
+        self._cache_gs_xyz_homo = torch.cat([gs_xyz, homogen_coord], dim=-1)
+
+        logger.info(
+            f"[LBS cache] Precomputed all pose-independent quantities for "
+            f"{gs_xyz.shape[0]:,} body Gaussians"
+        )
+
     def forward(
         self,
-        global_orient=None, 
-        body_pose=None, 
-        betas=None, 
-        transl=None, 
+        global_orient=None,
+        body_pose=None,
+        betas=None,
+        transl=None,
         smpl_scale=None,
         dataset_idx=-1,
         is_train=False,
@@ -814,20 +1019,27 @@ class HUGS_TRIMLP:
             T_vitruvian2t = self.inv_T_t2vitruvian.clone()
             T_vitruvian2t[..., :3, 3] = T_vitruvian2t[..., :3, 3] + self.canonical_offsets - curr_offsets
             T_vitruvian2pose = T_t2pose @ T_vitruvian2t
-            
-            _, lbs_T = smpl_lbsmap_top_k(
-                lbs_weights=self.smpl.lbs_weights,
-                verts_transform=T_vitruvian2pose.unsqueeze(0),
-                points=gs_xyz.unsqueeze(0),
-                template_points=self.vitruvian_verts.unsqueeze(0),
-                K=6,
-            )
-            lbs_T = lbs_T.squeeze(0)
-            
+
+            if hasattr(self, '_cloth_lbs_cache_neighbs'):
+                lbs_T = smpl_lbsmap_from_cache(
+                    verts_transform=T_vitruvian2pose.unsqueeze(0),
+                    neighbs=self._cloth_lbs_cache_neighbs,
+                    blend_weights=self._cloth_lbs_cache_blend_w,
+                ).squeeze(0)
+            else:
+                _, lbs_T = smpl_lbsmap_top_k(
+                    lbs_weights=self.smpl.lbs_weights,
+                    verts_transform=T_vitruvian2pose.unsqueeze(0),
+                    points=gs_xyz.unsqueeze(0),
+                    template_points=self.vitruvian_verts.unsqueeze(0),
+                    K=6,
+                )
+                lbs_T = lbs_T.squeeze(0)
+
             homogen_coord = torch.ones_like(gs_xyz[..., :1])
             gs_xyz_homo = torch.cat([gs_xyz, homogen_coord], dim=-1)
             deformed_xyz = torch.matmul(lbs_T, gs_xyz_homo.unsqueeze(-1))[..., :3, 0]
-        
+
         # === STEP 5: Final Transforms (same as human body) ===
         if smpl_scale is not None:
             deformed_xyz = deformed_xyz * smpl_scale.unsqueeze(0)

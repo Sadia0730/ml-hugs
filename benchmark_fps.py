@@ -237,6 +237,10 @@ def benchmark(cfg_path, ckpt_path, n_frames=200, warmup=30,
         originals = install_canonical_cache(model, has_cloth)
         logger.info("Canonical cache installed.")
 
+        logger.info("Precomputing LBS KNN cache (one-time cost) …")
+        model.precompute_lbs_cache()
+        logger.info("LBS KNN cache ready.")
+
     # ── warm-up ───────────────────────────────────────────────────────────────
     logger.info(f"Warm-up ({warmup} iters) …")
     bg = torch.zeros(3, dtype=torch.float32, device='cuda')

@@ -263,9 +263,10 @@ class GaussianTrainer():
                     self.human_gs.initialize()
                     self.human_gs = optimize_init(self.human_gs, num_steps=5000)
         # Initialize cloth if dataset provides cloth mesh
-        if hasattr(self.train_dataset, "cloth_vertices") and hasattr(self.train_dataset, "cloth_faces"):
-            cloth_vertices = self.train_dataset.cloth_vertices
-            cloth_faces = self.train_dataset.cloth_faces
+        _cloth_dataset = getattr(self, 'train_dataset', None) or self.val_dataset
+        if hasattr(_cloth_dataset, "cloth_vertices") and hasattr(_cloth_dataset, "cloth_faces"):
+            cloth_vertices = _cloth_dataset.cloth_vertices
+            cloth_faces = _cloth_dataset.cloth_faces
             self.human_gs.initialize_cloth(cloth_vertices, cloth_faces)
 
         if cfg.mode in ['scene', 'human_scene']:

@@ -1,0 +1,19 @@
+{
+  "gpu": "NVIDIA L40S",
+  "n_frames": 200,
+  "mode": "cache_triplane",
+  "body_gaussians": 364261,
+  "cloth_gaussians": 8594,
+  "rendering_fps": {
+    "ms": 3.7389412653446197,
+    "fps": 267.4553915218643
+  },
+  "lbs_ms": {
+    "ms": 6.916024491786957,
+    "fps": 144.5917378094219
+  },
+  "full_iter_fps": {
+    "ms": 10.663079957012087,
+    "fps": 93.7815344188989
+  }
+}
